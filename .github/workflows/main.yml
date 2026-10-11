@@ -9,11 +9,22 @@ permissions:
 jobs:
   compile:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Download source code
         uses: actions/checkout@v4
+
+      - name: Verify source file
+        shell: pwsh
+        run: |
+          $source = "$env:GITHUB_WORKSPACE\GoldHunterAI_V3_4.mq5"
+
+          if (!(Test-Path $source)) {
+            throw "GoldHunterAI_V3_4.mq5 was not found in the repository root."
+          }
+
+          Write-Host "Source file found: $source"
 
       - name: Install MetaTrader 5
         shell: pwsh
@@ -22,8 +33,11 @@ jobs:
           $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
 
           Invoke-WebRequest -Uri $url -OutFile $installer
-          Start-Process -FilePath $installer `
-            -ArgumentList '/auto', '/path:C:\MT5' -Wait
+
+          $process = Start-Process -FilePath $installer `
+            -ArgumentList '/auto', '/path:C:\MT5' -Wait -PassThru
+
+          Write-Host "Installer exit code: $($process.ExitCode)"
 
           $editor = "C:\MT5\metaeditor64.exe"
 
@@ -39,93 +53,114 @@ jobs:
           }
 
           if (!(Test-Path $editor)) {
-            throw "MetaEditor was not found after installation."
+            throw "MetaEditor was not found. Installation may have failed."
           }
 
           "METAEDITOR_PATH=$editor" |
             Out-File $env:GITHUB_ENV -Append
+
+          Write-Host "MetaEditor found: $editor"
+
       - name: Locate MQL5 standard library
         shell: pwsh
         run: |
           $roots = @(
             "C:\MT5",
-            "$env:APPDATA\MetaQuotes\Terminal"
-          )
+            "$env:APPDATA\MetaQuotes\Terminal",
+            "$env:LOCALAPPDATA\MetaQuotes\Terminal",
+            "$env:USERPROFILE\AppData\Roaming\MetaQuotes\Terminal"
+          ) | Select-Object -Unique
 
-          $roots = $roots | Where-Object {
-            Test-Path $_
+          $tradeFile = $null
+
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              Write-Host "Searching: $root"
+
+              $tradeFile = Get-ChildItem -Path $root `
+                -Filter Trade.mqh -File -Recurse `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+
+              if ($tradeFile) {
+                break
+              }
+            }
           }
-
-          $tradeFile = Get-ChildItem `
-            -Path $roots `
-            -Filter Trade.mqh `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
 
           if (!$tradeFile) {
-            throw "Trade.mqh was not found. Check MetaTrader installation."
+            throw "Trade.mqh was not found. The MetaTrader installation does not expose the required standard library."
           }
 
-          $sourceInclude = Split-Path `
-            (Split-Path $tradeFile.FullName -Parent) -Parent
+          Write-Host "Found Trade.mqh: $($tradeFile.FullName)"
 
+          $tradeDirectory = Split-Path $tradeFile.FullName -Parent
+          $sourceInclude = Split-Path $tradeDirectory -Parent
           $targetInclude = "C:\MT5\MQL5\Include"
 
-          New-Item -ItemType Directory `
-            -Force -Path $targetInclude | Out-Null
+          New-Item -ItemType Directory -Force `
+            -Path $targetInclude | Out-Null
 
-          if ($sourceInclude.TrimEnd('\') -ne `
-              $targetInclude.TrimEnd('\')) {
+          if ($sourceInclude.TrimEnd('\') -ne $targetInclude.TrimEnd('\')) {
             Copy-Item "$sourceInclude\*" `
               $targetInclude -Recurse -Force
           }
 
           if (!(Test-Path "$targetInclude\Trade\Trade.mqh")) {
-            throw "Trade.mqh is still missing after copying."
+            throw "Trade.mqh is still missing from the target include directory."
           }
 
           Write-Host "MQL5 standard library is ready."
+
       - name: Compile Expert Advisor
-     
         shell: pwsh
         run: |
           $folder = "C:\MT5\MQL5\Experts"
-          New-Item -ItemType Directory -Force -Path $folder |
-            Out-Null
-
-          Copy-Item `
-            "$env:GITHUB_WORKSPACE\GoldHunterAI_V3_4.mq5" `
-            "$folder\GoldHunterAI_V3_4.mq5"
-
           $source = "$folder\GoldHunterAI_V3_4.mq5"
+          $original = "$env:GITHUB_WORKSPACE\GoldHunterAI_V3_4.mq5"
           $log = "$env:RUNNER_TEMP\compile.log"
+
+          New-Item -ItemType Directory -Force `
+            -Path $folder | Out-Null
+
+          Copy-Item $original $source -Force
+
+          $ex5 = "$folder\GoldHunterAI_V3_4.ex5"
+
+          if (Test-Path $ex5) {
+            Remove-Item $ex5 -Force
+          }
 
           & $env:METAEDITOR_PATH `
             "/compile:$source" `
             "/log:$log" `
             "/portable"
 
-          Start-Sleep -Seconds 2
+          Start-Sleep -Seconds 3
 
           if (Test-Path $log) {
             Get-Content $log
+          } else {
+            throw "MetaEditor did not produce a compilation log."
           }
 
-          if (!(Test-Path "$folder\GoldHunterAI_V3_4.ex5")) {
-            throw "Compilation failed or the EX5 file was not generated."
+          $logText = Get-Content $log -Raw
+
+          if ($logText -match '(?i)\b[1-9]\d*\s+errors?\b') {
+            throw "Compiler log reports errors. See the log above."
+          }
+
+          if (!(Test-Path $ex5)) {
+            throw "Compilation failed: EX5 file was not generated."
           }
 
           New-Item -ItemType Directory -Force `
-            -Path "$env:GITHUB_WORKSPACE\output" |
-            Out-Null
+            -Path "$env:GITHUB_WORKSPACE\output" | Out-Null
 
-          Copy-Item "$folder\GoldHunterAI_V3_4.ex5" `
-            "$env:GITHUB_WORKSPACE\output\"
+          Copy-Item $ex5 "$env:GITHUB_WORKSPACE\output\GoldHunterAI_V3_4.ex5" -Force
+          Copy-Item $log "$env:GITHUB_WORKSPACE\output\compile.log" -Force
 
-          if (Test-Path $log) {
-            Copy-Item $log "$env:GITHUB_WORKSPACE\output\compile.log"
-          }
+          Write-Host "EX5 artifact prepared."
 
       - name: Upload compiled files
         if: success()
