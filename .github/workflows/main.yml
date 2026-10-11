@@ -44,8 +44,50 @@ jobs:
 
           "METAEDITOR_PATH=$editor" |
             Out-File $env:GITHUB_ENV -Append
+      - name: Locate MQL5 standard library
+        shell: pwsh
+        run: |
+          $roots = @(
+            "C:\MT5",
+            "$env:APPDATA\MetaQuotes\Terminal"
+          )
 
+          $roots = $roots | Where-Object {
+            Test-Path $_
+          }
+
+          $tradeFile = Get-ChildItem `
+            -Path $roots `
+            -Filter Trade.mqh `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (!$tradeFile) {
+            throw "Trade.mqh was not found. Check MetaTrader installation."
+          }
+
+          $sourceInclude = Split-Path `
+            (Split-Path $tradeFile.FullName -Parent) -Parent
+
+          $targetInclude = "C:\MT5\MQL5\Include"
+
+          New-Item -ItemType Directory `
+            -Force -Path $targetInclude | Out-Null
+
+          if ($sourceInclude.TrimEnd('\') -ne `
+              $targetInclude.TrimEnd('\')) {
+            Copy-Item "$sourceInclude\*" `
+              $targetInclude -Recurse -Force
+          }
+
+          if (!(Test-Path "$targetInclude\Trade\Trade.mqh")) {
+            throw "Trade.mqh is still missing after copying."
+          }
+
+          Write-Host "MQL5 standard library is ready."
       - name: Compile Expert Advisor
+     
         shell: pwsh
         run: |
           $folder = "C:\MT5\MQL5\Experts"
