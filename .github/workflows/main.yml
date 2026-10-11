@@ -41,7 +41,7 @@ jobs:
 
           Write-Host "Installer downloaded."
 
-      - name: Install MetaTrader 5
+            - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
@@ -66,11 +66,42 @@ jobs:
             Select-Object -First 1
 
           if (!$editor) {
-            throw "MetaEditor was not found in $installDir."
+            throw "MetaEditor was not found. Check the MT5 installation."
           }
 
-          "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
+          $editorDir = Split-Path $editor.FullName -Parent
+          $terminalDir = Split-Path $editorDir -Parent
+
+          $includeCandidates = @(
+            (Join-Path $terminalDir "MQL5\Include\Trade\Trade.mqh"),
+            (Join-Path $editorDir "MQL5\Include\Trade\Trade.mqh"),
+            (Join-Path $installDir "MQL5\Include\Trade\Trade.mqh")
+          )
+
+          $tradeLibrary = $includeCandidates |
+            Where-Object { Test-Path $_ } |
+            Select-Object -First 1
+
           Write-Host "MetaEditor: $($editor.FullName)"
+
+          if (!$tradeLibrary) {
+            Write-Host "Searching installation for Trade.mqh..."
+            $tradeLibrary = Get-ChildItem `
+              -Path $installDir `
+              -Filter "Trade.mqh" `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (!$tradeLibrary) {
+            throw "Trade.mqh is missing from the MT5 installation. Compilation cannot proceed."
+          }
+
+          Write-Host "Trade library found: $($tradeLibrary.FullName)"
+
+          "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
 
       - name: Compile GOLD HUNTER AI V3.4
         shell: pwsh
