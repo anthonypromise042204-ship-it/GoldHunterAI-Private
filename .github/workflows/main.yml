@@ -31,79 +31,78 @@ jobs:
 
           Write-Host "Source file found: $source"
 
-      - name: Install MetaTrader 5
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+     - name: Install MetaTrader 5
+  shell: pwsh
+  run: |
+  $ErrorActionPreference = "Stop"
+  
+      $installer = "$env:TEMP\mt5setup.exe"
 
-          $installer = "$env:TEMP\mt5setup.exe"
+    Invoke-WebRequest `
+      -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" `
+      -OutFile $installer
 
-          Invoke-WebRequest `
-            -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" `
-            -OutFile $installer
+    if (-not (Test-Path $installer)) {
+      throw "MT5 installer download failed."
+    }
 
-          Write-Host "Starting MT5 installer..."
-          $process = Start-Process `
-            -FilePath $installer `
-            -ArgumentList "/auto" `
-            -PassThru -Wait
+    Write-Host "Launching MT5 installer..."
+    $process = Start-Process `
+      -FilePath $installer `
+      -ArgumentList "/auto" `
+      -PassThru -Wait
 
-          Write-Host "Installer exit code: $($process.ExitCode)"
-          Write-Host "Searching for MT5 files..."
+    Write-Host "Installer exit code: $($process.ExitCode)"
 
-          $roots = @(
-            "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:ProgramFiles",
-            "${env:ProgramFiles(x86)}",
-            "$env:LOCALAPPDATA\Programs",
-            "C:\MT5"
-          ) | Where-Object {
-            $_ -and (Test-Path $_)
-          }
+    $roots = @(
+      "$env:APPDATA\MetaQuotes\Terminal",
+      "$env:ProgramFiles",
+      "${env:ProgramFiles(x86)}",
+      "$env:LOCALAPPDATA\Programs",
+      "C:\MT5"
+    ) | Where-Object {
+      $_ -and (Test-Path $_)
+    }
 
-          $trade = Get-ChildItem `
-            -Path $roots `
-            -Filter "Trade.mqh" `
-            -File -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+    Write-Host "Searching for MetaEditor and Trade.mqh..."
 
-          $editor = Get-ChildItem `
-            -Path $roots `
-            -Filter "metaeditor64.exe" `
-            -File -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+    $editor = Get-ChildItem `
+      -Path $roots `
+      -Filter "metaeditor64.exe" `
+      -File -Recurse `
+      -ErrorAction SilentlyContinue |
+      Select-Object -First 1
 
-          if (-not $trade) {
-            Write-Host "Trade.mqh was not found."
-            Write-Host "Checking common MT5 installation folders..."
-            Get-ChildItem `
-              -Path "$env:APPDATA\MetaQuotes" `
-              -ErrorAction SilentlyContinue |
-              Select-Object FullName
-            throw "MT5 include files were not located."
-          }
+    $trade = Get-ChildItem `
+      -Path $roots `
+      -Filter "Trade.mqh" `
+      -File -Recurse `
+      -ErrorAction SilentlyContinue |
+      Select-Object -First 1
 
-          if (-not $editor) {
-            throw "MetaEditor was not located."
-          }
+    if (-not $editor -or -not $trade) {
+      Write-Host "MetaEditor found: $([bool]$editor)"
+      Write-Host "Trade.mqh found: $([bool]$trade)"
+      Write-Host "Installer may not have installed the required MT5 files."
+      throw "MT5 installation is incomplete; cannot compile the EA."
+    }
 
-          $mqlPath = Split-Path `
-            (Split-Path $trade.FullName -Parent) `
-            -Parent
+    $mqlPath = Split-Path `
+      (Split-Path $trade.FullName -Parent) `
+      -Parent
 
-          "MT5_EDITOR=$($editor.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
+    "MT5_EDITOR=$($editor.FullName)" |
+      Out-File $env:GITHUB_ENV -Append
 
-          "MT5_MQL_PATH=$mqlPath" |
-            Out-File $env:GITHUB_ENV -Append
+    "MT5_MQL_PATH=$mqlPath" |
+      Out-File $env:GITHUB_ENV -Append
 
-          Write-Host "MetaEditor: $($editor.FullName)"
-          Write-Host "MQL5 folder: $mqlPath"
-          Write-Host "Trade.mqh: $($trade.FullName)"
+    Write-Host "MetaEditor: $($editor.FullName)"
+    Write-Host "MQL5 folder: $mqlPath"
+    Write-Host "Trade.mqh: $($trade.FullName)"
 
-      - name: Prepare EA for Compilation
+
+   - name: Prepare EA for Compilation
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
