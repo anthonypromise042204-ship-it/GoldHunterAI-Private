@@ -1,71 +1,22 @@
 name: GOLD HUNTER AI Compiler
 
 on:
-workflow_dispatch:
+  workflow_dispatch:
 
 jobs:
-compile:
-runs-on: windows-latest
-timeout-minutes: 20
+  compile:
+    runs-on: windows-latest
+    timeout-minutes: 20
 
-steps:
-  - name: Checkout Repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-  - name: Verify EA Source
-    shell: pwsh
-    run: |
-      $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
-      if (!(Test-Path $source)) {
-        throw "GoldHunterAI_V3_4.mq5 is missing from the repository root."
-      }
-      Write-Host "EA source found."
-
-  - name: Download MetaTrader Installer
-    shell: pwsh
-    run: |
-      $ErrorActionPreference = "Stop"
-      $installer = "$env:TEMP\mt5setup.exe"
-      Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile $installer
-      Write-Host "Installer downloaded."
-
-  - name: Install MetaTrader
-    shell: pwsh
-    run: |
-      $installer = "$env:TEMP\mt5setup.exe"
-      $process = Start-Process -FilePath $installer -ArgumentList "/auto" -PassThru -Wait
-      Write-Host "Installer exit code: $($process.ExitCode)"
-
-      $editor = Get-ChildItem -Path "$env:ProgramFiles","${env:ProgramFiles(x86)}","$env:APPDATA\MetaQuotes\Terminal" -Filter "metaeditor64.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-      if (!$editor) {
-        throw "MetaEditor was not found. MT5 installation needs fixing."
-      }
-      "MT5_EDITOR=$($editor.FullName)" | Out-File $env:GITHUB_ENV -Append
-
-  - name: Compile EA
-    shell: pwsh
-    run: |
-      $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
-      $output = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.ex5"
-      $log = Join-Path $env:GITHUB_WORKSPACE "compile.log"
-
-      Start-Process -FilePath $env:MT5_EDITOR -ArgumentList "/compile:$source","/log" -Wait
-
-      $generated = Join-Path (Split-Path $source -Parent) "GoldHunterAI_V3_4.ex5"
-      if (!(Test-Path $generated)) {
-        throw "Compilation failed. Check MetaEditor logs."
-      }
-
-      Copy-Item $generated $output -Force
-      Write-Host "EX5 output created."
-
-  - name: Upload Results
-    if: always()
-    uses: actions/upload-artifact@v4
-    with:
-      name: GoldHunterAI-Build
-      path: |
-        GoldHunterAI_V3_4.ex5
-        compile.log
-      if-no-files-found: warn
-      retention-days: 7
+      - name: Verify EA Source
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
+          if (!(Test-Path $source)) {
+            throw "GoldHunterAI_V3_4.mq5 is missing from the repository root."
+          }
+          Write-Host "EA source found."
