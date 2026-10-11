@@ -40,6 +40,7 @@ jobs:
           }
 
           Write-Host "Installer downloaded."
+
       - name: Install and inspect MetaTrader 5
         shell: pwsh
         run: |
@@ -57,8 +58,6 @@ jobs:
 
           Write-Host "Installer exit code: $($process.ExitCode)"
 
-          Write-Host "Searching common installation locations..."
-
           $roots = @(
             "C:\MT5",
             "$env:ProgramFiles\MetaTrader 5",
@@ -68,7 +67,7 @@ jobs:
 
           foreach ($root in $roots) {
             if (Test-Path $root) {
-              Write-Host "Found directory: $root"
+              Write-Host "Searching: $root"
 
               Get-ChildItem `
                 -Path $root `
@@ -116,91 +115,30 @@ jobs:
           Write-Host "MetaEditor: $editor"
           Write-Host "Compilation log: $log"
 
-$terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
+          $terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
 
-$tradeFile = Get-ChildItem `
-  -Path $terminalRoot `
-  -Filter "Trade.mqh" `
-  -File `
-  -Recurse `
-  -ErrorAction SilentlyContinue |
-  Select-Object -First 1
+          $tradeFile = Get-ChildItem `
+            -Path $terminalRoot `
+            -Filter "Trade.mqh" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
 
-if (!$tradeFile) {
-  throw "Trade.mqh is missing from the MetaTrader terminal data folders."
-}
+          if (!$tradeFile) {
+            throw "Trade.mqh is missing from the MetaTrader terminal data folders."
+          }
 
-$mql5Root = Split-Path `
-  (Split-Path `
-    (Split-Path $tradeFile.FullName -Parent) `
-    -Parent) `
-  -Parent
+          $mql5Root = Split-Path `
+            (Split-Path `
+              (Split-Path $tradeFile.FullName -Parent) `
+              -Parent) `
+            -Parent
 
-Write-Host "Standard library found: $($tradeFile.FullName)"
-Write-Host "MQL5 include root: $mql5Root"
+          Write-Host "Standard library found: $($tradeFile.FullName)"
+          Write-Host "MQL5 include root: $mql5Root"
 
-$arguments = "/compile:`"$source`" /include:`"$mql5Root`" /log"
+          $arguments = "/compile:`"$source`" /include:`"$mql5Root`" /log"
 
           $process = Start-Process `
-            -FilePath $editor `
-            -ArgumentList $arguments `
-            -Wait `
-            -PassThru
-
-          Write-Host "MetaEditor exit code: $($process.ExitCode)"
-
-          Start-Sleep -Seconds 2
-
-          Write-Host "Searching for generated EX5 files..."
-
-          $files = Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Filter "*.ex5" `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue
-
-          if ($files) {
-            foreach ($file in $files) {
-              Write-Host "EX5 found: $($file.FullName)"
-            }
-          }
-          else {
-            Write-Host "No EX5 file found in the workspace."
-          }
-
-          $logFiles = Get-ChildItem `
-            -Path $env:GITHUB_WORKSPACE `
-            -Filter "GoldHunterAI_V3_4.log" `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue
-
-          if ($logFiles) {
-            foreach ($logFile in $logFiles) {
-              Write-Host "----- COMPILER LOG: $($logFile.FullName) -----"
-              Get-Content $logFile.FullName
-              Write-Host "----- END COMPILER LOG -----"
-            }
-          }
-          else {
-            Write-Host "Compiler log was not found in the workspace."
-          }
-
-          if (!$files) {
-            throw "No EX5 output found. Review the compiler log above."
-          }
-
-      - name: Upload compilation diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: GOLD-HUNTER-AI-V3-4-Diagnostics
-          path: |
-            GoldHunterAI_V3_4.mq5
-            GoldHunterAI_V3_4.log
-            GoldHunterAI_V3_4.ex5
-            **/GoldHunterAI_V3_4.log
-            **/*.ex5
-          if-no-files-found: warn
-          retention-days: 7
+            -FilePath $
