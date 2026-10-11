@@ -18,11 +18,9 @@ jobs:
         shell: pwsh
         run: |
           $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
-
           if (!(Test-Path $source)) {
-            throw "GoldHunterAI_V3_4.mq5 was not found in the repository root."
+            throw "EA source file was not found."
           }
-
           "EA_SOURCE=$source" >> $env:GITHUB_ENV
           Write-Host "Source found: $source"
 
@@ -30,71 +28,19 @@ jobs:
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
-
-          Invoke-WebRequest `
-            -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" `
-            -OutFile $installer
-
+          Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile $installer
           if (!(Test-Path $installer)) {
             throw "MetaTrader installer download failed."
           }
-
-          Write-Host "Installer downloaded."
 
       - name: Install and inspect MetaTrader 5
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
-          $installDir = "C:\MT5"
-
-          Write-Host "Installer exists: $(Test-Path $installer)"
-          Write-Host "Starting MT5 installer..."
-
-          $process = Start-Process `
-            -FilePath $installer `
-            -ArgumentList @("/auto", "/path:$installDir") `
-            -Wait `
-            -PassThru
-
+          $process = Start-Process -FilePath $installer -ArgumentList @("/auto", "/path:C:\MT5") -Wait -PassThru
           Write-Host "Installer exit code: $($process.ExitCode)"
 
-          $roots = @(
-            "C:\MT5",
-            "$env:ProgramFiles\MetaTrader 5",
-            "${env:ProgramFiles(x86)}\MetaTrader 5",
-            "$env:APPDATA\MetaQuotes\Terminal"
-          )
-
-          foreach ($root in $roots) {
-            if (Test-Path $root) {
-              Write-Host "Searching: $root"
-
-              Get-ChildItem `
-                -Path $root `
-                -Filter "Trade.mqh" `
-                -File `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 5 -ExpandProperty FullName
-
-              Get-ChildItem `
-                -Path $root `
-                -Filter "metaeditor64.exe" `
-                -File `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 5 -ExpandProperty FullName
-            }
-          }
-
-          $editor = Get-ChildItem `
-            -Path "C:\MT5" `
-            -Filter "metaeditor64.exe" `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
+          $editor = Get-ChildItem -Path "C:\MT5" -Filter "metaeditor64.exe" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
           if (!$editor) {
             throw "MetaEditor was not found under C:\MT5."
           }
@@ -102,43 +48,84 @@ jobs:
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
           Write-Host "MetaEditor selected: $($editor.FullName)"
 
+      - name: Locate standard library
+        shell: pwsh
+        run: |
+          $roots = @(
+            "C:\MT5",
+            "$env:APPDATA\MetaQuotes",
+            "$env:LOCALAPPDATA\MetaQuotes",
+            "$env:ProgramFiles\MetaTrader 5",
+            "${env:ProgramFiles(x86)}\MetaTrader 5"
+          )
+
+          $tradeFile = $null
+
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              Write-Host "Searching: $root"
+              $tradeFile = Get-ChildItem -Path $root -Filter "Trade.mqh" -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($tradeFile) {
+                break
+              }
+            }
+          }
+
+          if (!$tradeFile) {
+            throw "Trade.mqh was not found. The standard MQL5 library may not be installed."
+          }
+
+          $mql5Root = Split-Path (Split-Path (Split-Path $tradeFile.FullName -Parent) -Parent) -Parent
+          Write-Host "Trade.mqh found: $($tradeFile.FullName)"
+          Write-Host "MQL5 root: $mql5Root"
+
+          "MQL5_ROOT=$mql5Root" >> $env:GITHUB_ENV
+
       - name: Compile GOLD HUNTER AI V3.4
         shell: pwsh
         run: |
           $source = $env:EA_SOURCE
           $editor = $env:METAEDITOR_PATH
+          $mql5Root = $env:MQL5_ROOT
           $log = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.log"
-
-          Remove-Item $log -Force -ErrorAction SilentlyContinue
 
           Write-Host "Source: $source"
           Write-Host "MetaEditor: $editor"
-          Write-Host "Compilation log: $log"
-
-          $terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
-
-          $tradeFile = Get-ChildItem `
-            -Path $terminalRoot `
-            -Filter "Trade.mqh" `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if (!$tradeFile) {
-            throw "Trade.mqh is missing from the MetaTrader terminal data folders."
-          }
-
-          $mql5Root = Split-Path `
-            (Split-Path `
-              (Split-Path $tradeFile.FullName -Parent) `
-              -Parent) `
-            -Parent
-
-          Write-Host "Standard library found: $($tradeFile.FullName)"
-          Write-Host "MQL5 include root: $mql5Root"
+          Write-Host "MQL5 root: $mql5Root"
 
           $arguments = "/compile:`"$source`" /include:`"$mql5Root`" /log"
 
-          $process = Start-Process `
-            -FilePath $
+          $process = Start-Process -FilePath $editor -ArgumentList $arguments -Wait -PassThru
+          Write-Host "MetaEditor exit code: $($process.ExitCode)"
+
+          Start-Sleep -Seconds 2
+
+          $files = Get-ChildItem -Path $env:GITHUB_WORKSPACE -Filter "*.ex5" -File -Recurse -ErrorAction SilentlyContinue
+
+          if (!$files) {
+            Write-Host "No EX5 found in workspace. Searching MetaTrader folders..."
+            $files = Get-ChildItem -Path "C:\MT5" -Filter "GoldHunterAI_V3_4.ex5" -File -Recurse -ErrorAction SilentlyContinue
+          }
+
+          if (!$files) {
+            if (Test-Path $log) {
+              Get-Content $log
+            }
+            throw "Compilation did not produce an EX5 file."
+          }
+
+          foreach ($file in $files) {
+            Write-Host "Compiled file found: $($file.FullName)"
+          }
+
+      - name: Upload compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLD-HUNTER-AI-V3-4-Diagnostics
+          path: |
+            GoldHunterAI_V3_4.mq5
+            GoldHunterAI_V3_4.log
+            **/*.ex5
+          if-no-files-found: warn
+          retention-days: 7
