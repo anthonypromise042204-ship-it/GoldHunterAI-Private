@@ -41,7 +41,7 @@ jobs:
 
           Write-Host "Installer downloaded."
 
-            - name: Install MetaTrader 5
+      - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
@@ -86,6 +86,7 @@ jobs:
 
           if (!$tradeLibrary) {
             Write-Host "Searching installation for Trade.mqh..."
+
             $tradeLibrary = Get-ChildItem `
               -Path $installDir `
               -Filter "Trade.mqh" `
@@ -116,7 +117,7 @@ jobs:
           Write-Host "MetaEditor: $editor"
           Write-Host "Compilation log: $log"
 
-          $arguments = "/compile:`"$source`" /log:`"$log`""
+          $arguments = "/compile:`"$source`" /log"
 
           $process = Start-Process `
             -FilePath $editor `
@@ -146,13 +147,22 @@ jobs:
             Write-Host "No EX5 file found in the workspace."
           }
 
-          if (Test-Path $log) {
-            Write-Host "----- COMPILER LOG -----"
-            Get-Content $log
-            Write-Host "----- END COMPILER LOG -----"
+          $logFiles = Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Filter "GoldHunterAI_V3_4.log" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if ($logFiles) {
+            foreach ($logFile in $logFiles) {
+              Write-Host "----- COMPILER LOG: $($logFile.FullName) -----"
+              Get-Content $logFile.FullName
+              Write-Host "----- END COMPILER LOG -----"
+            }
           }
           else {
-            Write-Host "Compiler log was not created at the expected path."
+            Write-Host "Compiler log was not found in the workspace."
           }
 
           if (!$files) {
@@ -168,6 +178,7 @@ jobs:
             GoldHunterAI_V3_4.mq5
             GoldHunterAI_V3_4.log
             GoldHunterAI_V3_4.ex5
+            **/GoldHunterAI_V3_4.log
             **/*.ex5
           if-no-files-found: warn
           retention-days: 7
