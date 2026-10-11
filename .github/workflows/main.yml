@@ -14,7 +14,7 @@ jobs:
   compile:
     name: Install and Compile EA
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Download Repository
@@ -23,9 +23,8 @@ jobs:
       - name: Verify EA Source
         shell: pwsh
         run: |
-          if (-not (Test-Path "GoldHunterAI_V3_4.mq5")) {
-            Write-Error "GoldHunterAI_V3_4.mq5 was not found in the repository root."
-            exit 1
+          if (-not (Test-Path "$env:GITHUB_WORKSPACE\GoldHunterAI_V3_4.mq5")) {
+            throw "GoldHunterAI_V3_4.mq5 was not found."
           }
 
           Write-Host "EA source file found."
@@ -50,46 +49,60 @@ jobs:
             -ArgumentList "/auto", "/path:$installPath" `
             -PassThru -Wait
 
-          Start-Sleep -Seconds 10
-
-          $editor = Get-ChildItem `
-            -Path $installPath `
-            -Filter "metaeditor64.exe" `
-            -Recurse -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if (-not $editor) {
-            Write-Host "Installer exit code: $($process.ExitCode)"
-            Write-Error "MetaEditor was not found in C:\MT5."
-            exit 1
-          }
-
-          "MT5_EDITOR=$($editor.FullName)" |
-            Out-File -FilePath $env:GITHUB_ENV -Append
-
-          Write-Host "MetaEditor found: $($editor.FullName)"
-
-      - name: Initialize MT5 Standard Library
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
+          Write-Host "Installer exit code: $($process.ExitCode)"
 
           $terminal = Get-ChildItem `
-            -Path "C:\MT5" `
+            -Path $installPath `
             -Filter "terminal64.exe" `
             -Recurse -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if (-not $terminal) {
-            Write-Error "MetaTrader terminal64.exe was not found."
-            exit 1
+            throw "terminal64.exe was not found under C:\MT5. Installation needs investigation."
           }
 
-          Write-Host "Starting terminal to initialize platform files."
+          $platformPath = $terminal.DirectoryName
+
+          $editor = Get-ChildItem `
+            -Path $platformPath `
+            -Filter "metaeditor64.exe" `
+            -Recurse -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (-not $editor) {
+            $editor = Get-ChildItem `
+              -Path $installPath `
+              -Filter "metaeditor64.exe" `
+              -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+          }
+
+          if (-not $editor) {
+            throw "MetaEditor was not found."
+          }
+
+          "MT5_PATH=$platformPath" |
+            Out-File $env:GITHUB_ENV -Append
+
+          "MT5_EDITOR=$($editor.FullName)" |
+            Out-File $env:GITHUB_ENV -Append
+
+          Write-Host "Platform path: $platformPath"
+          Write-Host "MetaEditor: $($editor.FullName)"
+
+      - name: Initialize MT5 Platform
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (-not (Test-Path "$env:MT5_PATH\terminal64.exe")) {
+            throw "MetaTrader platform was not found at $env:MT5_PATH"
+          }
 
           $process = Start-Process `
-            -FilePath $terminal.FullName `
+            -FilePath "$env:MT5_PATH\terminal64.exe" `
             -ArgumentList "/portable" `
+            -WorkingDirectory "$env:MT5_PATH" `
             -PassThru
 
           Start-Sleep -Seconds 60
@@ -100,34 +113,47 @@ jobs:
           }
 
           $tradeFile = Get-ChildItem `
-            -Path "C:\MT5" `
+            -Path $env:MT5_PATH `
             -Filter "Trade.mqh" `
             -Recurse -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
-          if (-not $tradeFile) {
-            Write-Host "Trade.mqh was not found in C:\MT5."
-            Write-Host "The compilation action will attempt platform initialization."
-          } else {
+          if ($tradeFile) {
             Write-Host "Trade.mqh found: $($tradeFile.FullName)"
+          } else {
+            Write-Host "WARNING: Trade.mqh was not found."
           }
 
       - name: Compile GOLD HUNTER AI
         uses: FX31337/MQL-Compile-Action@v2
         with:
           path: 'GoldHunterAI_V3_4.mq5'
-          mt-path: 'C:\MT5'
+          mt-path: ${{ env.MT5_PATH }}
           init-platform: true
           log-file: 'compile.log'
           verbose: true
 
-      - name: Upload Compiled EA and Logs
+      - name: List Build Files
+        if: always()
+        shell: pwsh
+        run: |
+          Write-Host "Searching for compiled files and logs..."
+
+          Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Include "*.ex5", "compile.log", "GoldHunterAI_V3_4.log" `
+            -File -Recurse -ErrorAction SilentlyContinue |
+            ForEach-Object {
+              Write-Host $_.FullName
+            }
+
+      - name: Upload Build Files
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GoldHunterAI-Build-Files
           path: |
-            **/GoldHunterAI_V3_4.ex5
+            **/*.ex5
             **/compile.log
             **/GoldHunterAI_V3_4.log
           if-no-files-found: warn
