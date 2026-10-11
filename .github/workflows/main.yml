@@ -23,8 +23,8 @@ jobs:
             throw "GoldHunterAI_V3_4.mq5 was not found in the repository root."
           }
 
-          Write-Host "EA source found: $source"
           "EA_SOURCE=$source" >> $env:GITHUB_ENV
+          Write-Host "Source found: $source"
 
       - name: Download MetaTrader 5 installer
         shell: pwsh
@@ -36,10 +36,10 @@ jobs:
             -OutFile $installer
 
           if (!(Test-Path $installer)) {
-            throw "MetaTrader 5 installer download failed."
+            throw "MetaTrader installer download failed."
           }
 
-          Write-Host "Installer downloaded successfully."
+          Write-Host "Installer downloaded."
 
       - name: Install MetaTrader 5
         shell: pwsh
@@ -66,24 +66,26 @@ jobs:
             Select-Object -First 1
 
           if (!$editor) {
-            throw "MetaEditor was not found after installation."
+            throw "MetaEditor was not found in $installDir."
           }
 
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
-          Write-Host "MetaEditor found: $($editor.FullName)"
-          
+          Write-Host "MetaEditor: $($editor.FullName)"
+
       - name: Compile GOLD HUNTER AI V3.4
         shell: pwsh
         run: |
           $source = $env:EA_SOURCE
           $editor = $env:METAEDITOR_PATH
-          $output = [System.IO.Path]::ChangeExtension($source, ".ex5")
+          $log = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.log"
 
-          Remove-Item $output -Force -ErrorAction SilentlyContinue
+          Remove-Item $log -Force -ErrorAction SilentlyContinue
 
-          $arguments = "/compile:`"$source`" /log"
+          Write-Host "Source: $source"
+          Write-Host "MetaEditor: $editor"
+          Write-Host "Compilation log: $log"
 
-          Write-Host "Starting MetaEditor compilation..."
+          $arguments = "/compile:`"$source`" /log:`"$log`""
 
           $process = Start-Process `
             -FilePath $editor `
@@ -91,11 +93,50 @@ jobs:
             -Wait `
             -PassThru
 
-          Write-Host "MetaEditor process exit code: $($process.ExitCode)"
+          Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
-          if (!(Test-Path $output)) {
-            Write-Host "Compilation did not produce the expected EX5 file."
-            throw "Compilation failed or MetaEditor did not generate the EX5 output."
+          Start-Sleep -Seconds 2
+
+          Write-Host "Searching for generated EX5 files..."
+
+          $files = Get-ChildItem `
+            -Path $env:GITHUB_WORKSPACE `
+            -Filter "*.ex5" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if ($files) {
+            foreach ($file in $files) {
+              Write-Host "EX5 found: $($file.FullName)"
+            }
+          }
+          else {
+            Write-Host "No EX5 file found in the workspace."
           }
 
-          Write-Host "EX5 file generated: $output"
+          if (Test-Path $log) {
+            Write-Host "----- COMPILER LOG -----"
+            Get-Content $log
+            Write-Host "----- END COMPILER LOG -----"
+          }
+          else {
+            Write-Host "Compiler log was not created at the expected path."
+          }
+
+          if (!$files) {
+            throw "No EX5 output found. Review the compiler log above."
+          }
+
+      - name: Upload compilation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLD-HUNTER-AI-V3-4-Diagnostics
+          path: |
+            GoldHunterAI_V3_4.mq5
+            GoldHunterAI_V3_4.log
+            GoldHunterAI_V3_4.ex5
+            **/*.ex5
+          if-no-files-found: warn
+          retention-days: 7
