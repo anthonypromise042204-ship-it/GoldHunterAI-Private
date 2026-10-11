@@ -3,20 +3,96 @@ name: GOLD HUNTER AI Compiler
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   compile:
     runs-on: windows-latest
-    timeout-minutes: 20
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify EA Source
+      - name: Verify EA source
         shell: pwsh
         run: |
           $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
+
           if (!(Test-Path $source)) {
-            throw "GoldHunterAI_V3_4.mq5 is missing from the repository root."
+            throw "GoldHunterAI_V3_4.mq5 was not found in the repository root."
           }
-          Write-Host "EA source found."
+
+          Write-Host "EA source found: $source"
+          "EA_SOURCE=$source" >> $env:GITHUB_ENV
+
+      - name: Download MetaTrader 5 installer
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
+
+          Invoke-WebRequest `
+            -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" `
+            -OutFile $installer
+
+          if (!(Test-Path $installer)) {
+            throw "MetaTrader 5 installer download failed."
+          }
+
+          Write-Host "Installer downloaded successfully."
+
+      - name: Install MetaTrader 5
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
+          $installDir = "C:\MT5"
+
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList @("/auto", "/path:$installDir") `
+            -Wait `
+            -PassThru
+
+          Write-Host "Installer exit code: $($process.ExitCode)"
+
+          $editor = Get-ChildItem `
+            -Path $installDir `
+            -Filter "metaeditor64.exe" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if (!$editor) {
+            throw "MetaEditor was not found after installation."
+          }
+
+          "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
+          Write-Host "MetaEditor found: $($editor.FullName)"
+
+      - name: Compile GOLD HUNTER AI V3.4
+        shell: pwsh
+        run: |
+          $source = $env:EA_SOURCE
+          $editor = $env:METAEDITOR_PATH
+          $output = [System.IO.Path]::ChangeExtension($source, ".ex5")
+
+          Remove-Item $output -Force -ErrorAction SilentlyContinue
+
+          $arguments = "/compile:`"$source`" /log"
+
+          Write-Host "Starting MetaEditor compilation..."
+
+          $process = Start-Process `
+            -FilePath $editor `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+          Write-Host "MetaEditor process exit code: $($process.ExitCode)"
+
+          if (!(Test-Path $output)) {
+            Write-Host "Compilation did not produce the expected EX5 file."
+            throw "Compilation failed or MetaEditor did not generate the EX5 output."
