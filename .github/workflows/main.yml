@@ -1,0 +1,95 @@
+name: Compile GOLD HUNTER AI
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compile:
+    runs-on: windows-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Download source code
+        uses: actions/checkout@v4
+
+      - name: Install MetaTrader 5
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\mt5setup.exe"
+          $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
+
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          Start-Process -FilePath $installer `
+            -ArgumentList '/auto', '/path:C:\MT5' -Wait
+
+          $editor = "C:\MT5\metaeditor64.exe"
+
+          if (!(Test-Path $editor)) {
+            $found = Get-ChildItem C:\MT5 `
+              -Filter metaeditor64.exe -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($found) {
+              $editor = $found.FullName
+            }
+          }
+
+          if (!(Test-Path $editor)) {
+            throw "MetaEditor was not found after installation."
+          }
+
+          "METAEDITOR_PATH=$editor" |
+            Out-File $env:GITHUB_ENV -Append
+
+      - name: Compile Expert Advisor
+        shell: pwsh
+        run: |
+          $folder = "C:\MT5\MQL5\Experts"
+          New-Item -ItemType Directory -Force -Path $folder |
+            Out-Null
+
+          Copy-Item `
+            "$env:GITHUB_WORKSPACE\GoldHunterAI_V3_4.mq5" `
+            "$folder\GoldHunterAI_V3_4.mq5"
+
+          $source = "$folder\GoldHunterAI_V3_4.mq5"
+          $log = "$env:RUNNER_TEMP\compile.log"
+
+          & $env:METAEDITOR_PATH `
+            "/compile:$source" `
+            "/log:$log" `
+            "/portable"
+
+          Start-Sleep -Seconds 2
+
+          if (Test-Path $log) {
+            Get-Content $log
+          }
+
+          if (!(Test-Path "$folder\GoldHunterAI_V3_4.ex5")) {
+            throw "Compilation failed or the EX5 file was not generated."
+          }
+
+          New-Item -ItemType Directory -Force `
+            -Path "$env:GITHUB_WORKSPACE\output" |
+            Out-Null
+
+          Copy-Item "$folder\GoldHunterAI_V3_4.ex5" `
+            "$env:GITHUB_WORKSPACE\output\"
+
+          if (Test-Path $log) {
+            Copy-Item $log "$env:GITHUB_WORKSPACE\output\compile.log"
+          }
+
+      - name: Upload compiled files
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldHunterAI-V3-4-compiled
+          path: output/*
+          if-no-files-found: error
+          retention-days: 1
