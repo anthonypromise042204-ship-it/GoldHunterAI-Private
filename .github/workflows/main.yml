@@ -31,7 +31,7 @@ jobs:
 
           Write-Host "Source file found: $source"
 
-            - name: Install MetaTrader 5
+              - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
