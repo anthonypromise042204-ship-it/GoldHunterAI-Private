@@ -1,11 +1,11 @@
 name: Compile GOLD HUNTER AI
 
-on:
-push:
-paths:
-- 'GoldHunterAI_V3_4.mq5'
-- '.github/workflows/main.yml'
-workflow_dispatch:
+"on":
+  push:
+    paths:
+      - 'GoldHunterAI_V3_4.mq5'
+      - '.github/workflows/main.yml'
+  workflow_dispatch:
 
 permissions:
 contents: read
