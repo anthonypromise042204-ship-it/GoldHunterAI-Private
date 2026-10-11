@@ -71,7 +71,7 @@ jobs:
 
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
           Write-Host "MetaEditor found: $($editor.FullName)"
-
+          
       - name: Compile GOLD HUNTER AI V3.4
         shell: pwsh
         run: |
@@ -96,3 +96,6 @@ jobs:
           if (!(Test-Path $output)) {
             Write-Host "Compilation did not produce the expected EX5 file."
             throw "Compilation failed or MetaEditor did not generate the EX5 output."
+          }
+
+          Write-Host "EX5 file generated: $output"
