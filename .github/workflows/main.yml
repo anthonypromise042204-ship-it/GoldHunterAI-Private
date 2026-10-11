@@ -116,7 +116,30 @@ jobs:
           Write-Host "MetaEditor: $editor"
           Write-Host "Compilation log: $log"
 
-          $arguments = "/compile:`"$source`" /log"
+$terminalRoot = Join-Path $env:APPDATA "MetaQuotes\Terminal"
+
+$tradeFile = Get-ChildItem `
+  -Path $terminalRoot `
+  -Filter "Trade.mqh" `
+  -File `
+  -Recurse `
+  -ErrorAction SilentlyContinue |
+  Select-Object -First 1
+
+if (!$tradeFile) {
+  throw "Trade.mqh is missing from the MetaTrader terminal data folders."
+}
+
+$mql5Root = Split-Path `
+  (Split-Path `
+    (Split-Path $tradeFile.FullName -Parent) `
+    -Parent) `
+  -Parent
+
+Write-Host "Standard library found: $($tradeFile.FullName)"
+Write-Host "MQL5 include root: $mql5Root"
+
+$arguments = "/compile:`"$source`" /include:`"$mql5Root`" /log"
 
           $process = Start-Process `
             -FilePath $editor `
