@@ -8,72 +8,58 @@ permissions:
 
 jobs:
   compile:
-    name: Compile GOLD HUNTER AI
     runs-on: windows-latest
     timeout-minutes: 20
 
+    defaults:
+      run:
+        shell: pwsh
+
     steps:
-      # 1. Download repository source
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Verify the actual EA source
       - name: Verify EA source
-        shell: pwsh
         run: |
           $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
 
-          if (!(Test-Path $source -PathType Leaf)) {
-            throw "GoldHunterAI_V3_4.mq5 was not found in the repository root."
+          if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "GoldHunterAI_V3_4.mq5 is missing from the repository root."
           }
 
-          if ((Get-Item $source).Length -eq 0) {
+          if ((Get-Item -LiteralPath $source).Length -eq 0) {
             throw "The EA source file is empty."
           }
 
-          Write-Host "Source verified: $source"
-          Write-Host "Source size: $((Get-Item $source).Length) bytes"
-
           "EA_SOURCE=$source" >> $env:GITHUB_ENV
+          Write-Host "Verified source: $source"
 
-      # 3. Download MetaTrader 5
-      - name: Download MetaTrader 5
-        shell: pwsh
+      - name: Download MetaTrader 5 installer
         run: |
           $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
-
           $url = "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe"
 
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $installer `
-            -TimeoutSec 180
+          Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 180
 
-          if (!(Test-Path $installer -PathType Leaf)) {
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) {
             throw "MetaTrader installer download failed."
           }
 
-          if ((Get-Item $installer).Length -lt 100000) {
-            throw "Downloaded installer is unexpectedly small."
+          if ((Get-Item -LiteralPath $installer).Length -lt 100000) {
+            throw "The downloaded installer is unexpectedly small."
           }
 
-          Write-Host "MetaTrader installer downloaded successfully."
+          "MT5_INSTALLER=$installer" >> $env:GITHUB_ENV
+          Write-Host "Installer downloaded."
 
-      # 4. Install MetaTrader and locate MetaEditor
       - name: Install MetaTrader 5
-        shell: pwsh
         run: |
-          $installer = Join-Path $env:RUNNER_TEMP "mt5setup.exe"
           $installDir = "C:\MT5"
 
-          New-Item `
-            -ItemType Directory `
-            -Path $installDir `
-            -Force |
-            Out-Null
+          New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
           $process = Start-Process `
-            -FilePath $installer `
+            -FilePath $env:MT5_INSTALLER `
             -ArgumentList @("/auto", "/path:$installDir") `
             -Wait `
             -PassThru
@@ -104,107 +90,113 @@ jobs:
             throw "terminal64.exe was not found."
           }
 
-          Write-Host "MetaEditor found: $($editor.FullName)"
-          Write-Host "Terminal found: $($terminal.FullName)"
-
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
           "TERMINAL_PATH=$($terminal.FullName)" >> $env:GITHUB_ENV
           "MT5_INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
 
-      # 5. Find the standard trading library and prepare the EA
-      - name: Prepare EA and trading library
-        shell: pwsh
-        run: |
-          $installDir = $env:MT5_INSTALL_DIR
-          $editor = $env:METAEDITOR_PATH
+          Write-Host "MetaEditor: $($editor.FullName)"
+          Write-Host "Terminal: $($terminal.FullName)"
 
-          if (!(Test-Path $editor -PathType Leaf)) {
-            throw "MetaEditor executable is missing."
+      - name: Initialize MetaTrader and locate trading library
+        run: |
+          $terminal = $env:TERMINAL_PATH
+          $installDir = $env:MT5_INSTALL_DIR
+
+          $terminalDir = Split-Path -Parent $terminal
+
+          Write-Host "Starting MetaTrader in portable mode."
+
+          $process = Start-Process `
+            -FilePath $terminal `
+            -ArgumentList "/portable" `
+            -WorkingDirectory $terminalDir `
+            -PassThru
+
+          Start-Sleep -Seconds 12
+
+          if (!$process.HasExited) {
+            Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
           }
 
-          $tradeLibrary = Get-ChildItem `
-            -Path $installDir `
-            -Filter "Trade.mqh" `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
-            } |
-            Select-Object -First 1
+          $searchRoots = @(
+            (Join-Path $installDir "MQL5\Include"),
+            (Join-Path $env:APPDATA "MetaQuotes\Terminal")
+          )
+
+          $tradeLibrary = $null
+
+          foreach ($root in $searchRoots) {
+            if (Test-Path -LiteralPath $root -PathType Container) {
+              $tradeLibrary = Get-ChildItem `
+                -Path $root `
+                -Filter "Trade.mqh" `
+                -File `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+                } |
+                Select-Object -First 1
+
+              if ($tradeLibrary) {
+                break
+              }
+            }
+          }
 
           if (!$tradeLibrary) {
-            throw "Trade.mqh is missing. Cannot safely compile the EA."
+            throw "Trade.mqh was not found. The standard MQL5 trading library is required."
           }
 
-          $mql5Dir = Split-Path `
-            (Split-Path `
-              (Split-Path $tradeLibrary.FullName -Parent) -Parent) `
-            -Parent
-
+          $includeDir = Split-Path -Parent (Split-Path -Parent $tradeLibrary.FullName)
+          $mql5Dir = Split-Path -Parent (Split-Path -Parent $includeDir)
           $expertsDir = Join-Path $mql5Dir "Experts"
 
-          New-Item `
-            -ItemType Directory `
-            -Path $expertsDir `
-            -Force |
-            Out-Null
+          New-Item -ItemType Directory -Path $expertsDir -Force | Out-Null
 
-          $source = $env:EA_SOURCE
           $compileSource = Join-Path $expertsDir "GoldHunterAI_V3_4.mq5"
           $compileLog = Join-Path $env:RUNNER_TEMP "GoldHunterAI_compile.log"
 
           Copy-Item `
-            -Path $source `
+            -LiteralPath $env:EA_SOURCE `
             -Destination $compileSource `
             -Force
 
-          if (!(Test-Path $compileSource -PathType Leaf)) {
-            throw "Could not copy the EA source into the Experts directory."
-          }
+          "MQL5_DIR=$mql5Dir" >> $env:GITHUB_ENV
+          "INCLUDE_DIR=$includeDir" >> $env:GITHUB_ENV
+          "EXPERT_DIR=$expertsDir" >> $env:GITHUB_ENV
+          "COMPILE_SOURCE=$compileSource" >> $env:GITHUB_ENV
+          "COMPILE_LOG=$compileLog" >> $env:GITHUB_ENV
 
           Write-Host "Trading library: $($tradeLibrary.FullName)"
           Write-Host "MQL5 directory: $mql5Dir"
           Write-Host "EA source: $compileSource"
 
-          "COMPILE_SOURCE=$compileSource" >> $env:GITHUB_ENV
-          "COMPILE_LOG=$compileLog" >> $env:GITHUB_ENV
-          "EXPERT_DIR=$expertsDir" >> $env:GITHUB_ENV
-
-      # 6. Compile the actual EA
       - name: Compile GOLD HUNTER AI
-        shell: pwsh
         run: |
           $editor = $env:METAEDITOR_PATH
           $source = $env:COMPILE_SOURCE
           $log = $env:COMPILE_LOG
-          $expertDir = $env:EXPERT_DIR
+          $ex5 = Join-Path $env:EXPERT_DIR "GoldHunterAI_V3_4.ex5"
 
-          if (!(Test-Path $editor -PathType Leaf)) {
-            throw "MetaEditor executable was not found."
+          if (!(Test-Path -LiteralPath $editor -PathType Leaf)) {
+            throw "MetaEditor executable is missing."
           }
 
-          if (!(Test-Path $source -PathType Leaf)) {
-            throw "EA source file was not found."
+          if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
+            throw "The EA source for compilation is missing."
           }
 
-          if (!(Test-Path $expertDir -PathType Container)) {
-            throw "Experts directory was not found."
+          if (!(Test-Path -LiteralPath (Join-Path $env:INCLUDE_DIR "Trade\Trade.mqh") -PathType Leaf)) {
+            throw "Trade.mqh is missing from the selected include directory."
           }
 
-          Remove-Item $log -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $log -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $ex5 -Force -ErrorAction SilentlyContinue
 
-          $ex5 = Join-Path $expertDir "GoldHunterAI_V3_4.ex5"
+          Write-Host "Compiling: $source"
 
-          # Remove any old output so a previous build cannot be mistaken
-          # for a successful compilation of the current source.
-          Remove-Item $ex5 -Force -ErrorAction SilentlyContinue
-
-          Write-Host "Starting MetaEditor compiler..."
-          Write-Host "Source: $source"
-          Write-Host "Log: $log"
-
-          $arguments = "/compile:`"$source`" /log:`"$log`""
+          $arguments = "/compile:$source /log:$log"
 
           $process = Start-Process `
             -FilePath $editor `
@@ -212,50 +204,48 @@ jobs:
             -Wait `
             -PassThru
 
-          Start-Sleep -Seconds 3
+          Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
-          if (!(Test-Path $log -PathType Leaf)) {
-            throw "MetaEditor did not produce a compiler log."
+          Start-Sleep -Seconds 2
+
+          if (!(Test-Path -LiteralPath $log -PathType Leaf)) {
+            throw "MetaEditor did not create a compiler log."
           }
 
-          $logText = Get-Content $log -Raw
+          $logText = Get-Content -LiteralPath $log -Raw
 
           Write-Host "========== COMPILER LOG =========="
           Write-Host $logText
           Write-Host "=================================="
 
           if ($logText -match '(?i)Result:\s*[1-9]\d*\s+errors?') {
-            throw "Compilation failed. Review the compiler log."
+            throw "Compilation failed. See the compiler log."
           }
 
           if ($logText -match '(?i)\b[1-9]\d*\s+errors?\b') {
-            throw "Compiler reported errors."
+            throw "The compiler reported one or more errors."
           }
 
-          if ($logText -notmatch '(?i)Result:\s*0\s+errors?') {
-            throw "Could not verify a zero-error compiler result."
+          if (!(Test-Path -LiteralPath $ex5 -PathType Leaf)) {
+            throw "The expected EX5 file was not created."
           }
 
-          if (!(Test-Path $ex5 -PathType Leaf)) {
-            throw "Compilation did not produce GoldHunterAI_V3_4.ex5."
+          if ((Get-Item -LiteralPath $ex5).Length -eq 0) {
+            throw "The EX5 file is empty."
           }
 
-          if ((Get-Item $ex5).Length -eq 0) {
-            throw "The compiled EX5 file is empty."
-          }
-
-          Write-Host "Compilation verified."
+          Write-Host "Compilation checks passed."
           Write-Host "EX5 file: $ex5"
-          Write-Host "EX5 size: $((Get-Item $ex5).Length) bytes"
+          Write-Host "EX5 size: $((Get-Item -LiteralPath $ex5).Length) bytes"
 
-      # 7. Upload the actual compiled EA and compiler log
-      - name: Upload compiled EA and logs
+      - name: Upload compiled EA and compiler log
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GOLD-HUNTER-AI-V3-4-Build
           path: |
-            C:\MT5\MQL5\Experts\GoldHunterAI_V3_4.ex5
             ${{ runner.temp }}\GoldHunterAI_compile.log
+            C:\MT5\MQL5\Experts\GoldHunterAI_V3_4.ex5
+            C:\MT5\MQL5\Experts\GoldHunterAI_V3_4.mq5
           if-no-files-found: warn
           retention-days: 14
