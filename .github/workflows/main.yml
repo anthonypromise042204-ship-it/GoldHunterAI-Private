@@ -93,75 +93,62 @@ jobs:
           $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
 
           if (!(Test-Path $source -PathType Leaf)) {
-            throw 'GoldHunterAI_V4.mq5 source file not found'
+            throw "V4 source file not found"
           }
 
           if (!(Test-Path $env:METAEDITOR_PATH -PathType Leaf)) {
-            throw 'MetaEditor executable not found'
+            throw "MetaEditor executable not found"
           }
 
-          # Find the standard MQL5 Trade library.
           $searchRoots = @(
             'C:\Program Files',
             'C:\Program Files (x86)',
             $env:LOCALAPPDATA,
             $env:APPDATA
-          ) | Where-Object {
-            $_ -and (Test-Path $_)
-          } | Select-Object -Unique
+          )
 
-          $trade = Get-ChildItem `
-            -Path $searchRoots `
-            -Filter 'Trade.mqh' `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.FullName -match '\\MQL5\\Include\\Trade\\Trade\.mqh$'
-            } |
+          $trade = Get-ChildItem -Path $searchRoots -Filter 'Trade.mqh' -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match '\\MQL5\\Include\\Trade\\Trade\.mqh$' } |
             Select-Object -First 1
 
           if (!$trade) {
-            throw 'Trade.mqh not found. The MT5 standard library must be installed or initialized.'
+            throw "Trade.mqh library not found"
           }
 
-          Write-Host "Trade library found: $($trade.FullName)"
-
-          # Get the MQL5 directory from the library path.
-          $mql5Root = Split-Path `
-            (Split-Path `
-              (Split-Path $trade.FullName -Parent) -Parent) -Parent
-
+          $mql5Root = Split-Path (Split-Path (Split-Path $trade.FullName -Parent) -Parent) -Parent
           $experts = Join-Path $mql5Root 'Experts'
 
-          New-Item `
-            -ItemType Directory `
-            -Path $experts `
-            -Force | Out-Null
+          New-Item -ItemType Directory -Path $experts -Force | Out-Null
+          New-Item -ItemType Directory -Path $out -Force | Out-Null
 
           $expertSource = Join-Path $experts 'GoldHunterAI_V4.mq5'
+          Copy-Item -Path $source -Destination $expertSource -Force
 
-          Copy-Item $source $expertSource -Force
+          $arguments = "/compile:$expertSource /log:$log"
 
-          New-Item `
-            -ItemType Directory `
-            -Path $out `
-            -Force | Out-Null
-
-          $arguments = "/compile:`"$expertSource`" /log:`"$log`""
-
-          $process = Start-Process `
-            -FilePath $env:METAEDITOR_PATH `
-            -ArgumentList $arguments `
-            -Wait `
-            -PassThru
+          $process = Start-Process -FilePath $env:METAEDITOR_PATH -ArgumentList $arguments -Wait -PassThru
 
           if (!(Test-Path $log -PathType Leaf)) {
-            throw "MetaEditor produced no compile log. Exit code: $($process.ExitCode)"
+            throw "Compiler log was not created. Exit code: $($process.ExitCode)"
           }
 
           $logText = Get-Content $log -Raw
           Write-Host $logText
 
-          Copy-Item $log `
-            (Join-Path $out '
+          $logCopy = Join-Path $out 'GoldHunterAI_V4_compile.log'
+          Copy-Item -Path $log -Destination $logCopy -Force
+
+          if ($logText -match '(?im)\b[1-9]\d*\s+errors?\b') {
+            throw "Compiler reported errors"
+          }
+
+          $ex5 = Join-Path $experts 'GoldHunterAI_V4.ex5'
+
+          if (!(Test-Path $ex5 -PathType Leaf)) {
+            throw "Compiled EX5 file was not created"
+          }
+
+          $ex5Copy = Join-Path $out 'GoldHunterAI_V4.ex5'
+          Copy-Item -Path $ex5 -Destination $ex5Copy -Force
+
+          Write-Host "Compilation output files created."
