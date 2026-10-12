@@ -98,49 +98,42 @@ jobs:
 
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
           "TERMINAL_PATH=$($terminal.FullName)" >> $env:GITHUB_ENV
-
-      - name: Prepare EA and verify trading library
+      - name: Find MetaTrader installation and trading library
         shell: pwsh
         run: |
-          $installDir = "C:\MT5"
-          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
-          $expertDir = Join-Path $installDir "MQL5\Experts"
-          $includeFile = Join-Path $installDir "MQL5\Include\Trade\Trade.mqh"
+          Write-Host "Searching for MetaTrader installation..."
 
-          New-Item -ItemType Directory -Path $expertDir -Force |
-            Out-Null
+          $roots = @(
+            "C:\MT5",
+            "$env:APPDATA\MetaQuotes",
+            "$env:LOCALAPPDATA\Programs",
+            "C:\Program Files",
+            "C:\Program Files (x86)"
+          )
 
-          if (!(Test-Path $includeFile -PathType Leaf)) {
-            $includeFile = Get-ChildItem `
-              -Path $installDir `
-              -Filter "Trade.mqh" `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match '[\\/]Include[\\/]Trade[\\/]Trade\.mqh$' } |
-              Select-Object -First 1 -ExpandProperty FullName
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              Write-Host "Checking: $root"
 
-            if (!$includeFile) {
-              throw "Required MQL5 library Trade.mqh is missing. Cannot compile safely."
+              Get-ChildItem `
+                -Path $root `
+                -Filter "Trade.mqh" `
+                -File `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 10 -ExpandProperty FullName
             }
-
-            Write-Host "Trading library found: $includeFile"
           }
 
-          Copy-Item `
-            -Path $source `
-            -Destination $expertDir `
-            -Force
+          Write-Host "Searching for MetaEditor..."
 
-          $compileSource = Join-Path $expertDir "GoldHunterAI_V3_4.mq5"
-          $compileLog = Join-Path $env:RUNNER_TEMP "GoldHunterAI_compile.log"
-
-          "COMPILE_SOURCE=$compileSource" >> $env:GITHUB_ENV
-          "COMPILE_LOG=$compileLog" >> $env:GITHUB_ENV
-          "EXPERT_DIR=$expertDir" >> $env:GITHUB_ENV
-
-          Write-Host "EA copied to: $compileSource"
-          Write-Host "Trading library verified."
+          Get-ChildItem `
+            -Path "C:\MT5" `
+            -Filter "metaeditor64.exe" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 5 -ExpandProperty FullName
 
       - name: Compile GOLD HUNTER AI
         shell: pwsh
