@@ -19,7 +19,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI V3_4.mq5"
+          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
 
           if (!(Test-Path $source -PathType Leaf)) {
             throw "EA source file not found: $source"
@@ -75,7 +75,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI V3_4.mq5"
+          $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V3_4.mq5"
           $editor = $env:METAEDITOR_PATH
           $log = Join-Path $env:RUNNER_TEMP "GoldHunterAI_compile.log"
 
@@ -94,17 +94,17 @@ jobs:
             throw "MetaEditor did not produce a compiler log."
           }
 
-          $compiled = Join-Path (Split-Path $source) "GoldHunterAI V3_4.ex5"
+          $compiled = Join-Path (Split-Path $source) "GoldHunterAI_V3_4.ex5"
 
           if (Test-Path $compiled -PathType Leaf) {
-            Copy-Item $compiled (Join-Path $outputDir "GoldHunterAI V3_4.ex5") -Force
+            Copy-Item $compiled (Join-Path $outputDir "GoldHunterAI_V3_4.ex5") -Force
           }
 
           if ((Get-Content $log -Raw) -match '\b[1-9]\d*\s+errors?\b') {
             throw "Compilation reported errors. Review the compiler log."
           }
 
-          if (!(Test-Path (Join-Path $outputDir "GoldHunterAI V3_4.ex5"))) {
+          if (!(Test-Path (Join-Path $outputDir "GoldHunterAI_V3_4.ex5"))) {
             throw "No compiled EX5 file was produced. Review the compiler log."
           }
 
