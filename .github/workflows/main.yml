@@ -110,54 +110,40 @@ jobs:
           "TERMINAL_PATH=$($terminal.FullName)" >> $env:GITHUB_ENV
           "MT5_INSTALL_DIR=$installDir" >> $env:GITHUB_ENV
 
-      # 5. Initialize MetaTrader and locate its standard library
       - name: Initialize MetaTrader and find library
         shell: pwsh
         run: |
           $terminal = $env:TERMINAL_PATH
           $installDir = $env:MT5_INSTALL_DIR
 
-          Write-Host "Starting MetaTrader in portable mode."
+          if (!(Test-Path $terminal -PathType Leaf)) {
+            throw "MetaTrader terminal executable was not found."
+          }
 
           $terminalDir = Split-Path $terminal -Parent
+
+          Write-Host "Starting MetaTrader in portable mode."
 
           Start-Process `
             -FilePath $terminal `
             -ArgumentList "/portable" `
             -WorkingDirectory $terminalDir
 
-          Start-Sleep -Seconds 30
+          Start-Sleep -Seconds 15
 
-          $roots = @(
-            $installDir,
-            "$env:APPDATA\MetaQuotes\Terminal"
-          )
-
-          $tradeLibrary = $null
-
-          foreach ($root in $roots) {
-            if (Test-Path $root) {
-              Write-Host "Searching for Trade.mqh under: $root"
-
-              $tradeLibrary = Get-ChildItem `
-                -Path $root `
-                -Filter "Trade.mqh" `
-                -File `
-                -Recurse `
-                -ErrorAction SilentlyContinue |
-                Where-Object {
-                  $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
-                } |
-                Select-Object -First 1
-
-              if ($tradeLibrary) {
-                break
-              }
-            }
-          }
+          $tradeLibrary = Get-ChildItem `
+            -Path $installDir `
+            -Filter "Trade.mqh" `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+            } |
+            Select-Object -First 1
 
           if (!$tradeLibrary) {
-            throw "Trade.mqh was not found. The standard MQL5 library is unavailable; compilation cannot proceed."
+            throw "Trade.mqh was not found. The MQL5 standard library must be available before compilation."
           }
 
           $mql5Dir = Split-Path `
@@ -167,10 +153,6 @@ jobs:
 
           $includeDir = Join-Path $mql5Dir "Include"
           $expertsDir = Join-Path $mql5Dir "Experts"
-
-          if (!(Test-Path $includeDir -PathType Container)) {
-            throw "MQL5 Include directory is missing: $includeDir"
-          }
 
           New-Item `
             -ItemType Directory `
@@ -187,5 +169,10 @@ jobs:
             -Destination $compileSource `
             -Force
 
-          Write-Host "Trading library: $($tradeLibrary.FullName)"
-          Write-Host "MQL5 directory: $m
+          Write-Host "Trading library found: $($tradeLibrary.FullName)"
+          Write-Host "MQL5 directory: $mql5Dir"
+          Write-Host "EA source: $compileSource"
+
+          "COMPILE_SOURCE=$compileSource" >> $env:GITHUB_ENV
+          "COMPILE_LOG=$compileLog" >> $env:GITHUB_ENV
+          "EXPERT_DIR=$expertsDir" >> $env:GITHUB_ENV
