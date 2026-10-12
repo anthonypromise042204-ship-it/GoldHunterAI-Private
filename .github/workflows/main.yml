@@ -1,4 +1,4 @@
-name: GOLD HUNTER AI Compiler
+-name: GOLD HUNTER AI Compiler
 
 on:
   workflow_dispatch:
