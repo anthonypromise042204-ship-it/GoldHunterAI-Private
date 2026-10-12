@@ -79,7 +79,11 @@ int OnInit(){
  if(RiskPercent<=0||RiskPercent>5||DailyLossLimitPercent<=0||RewardRiskRatio<=0||ATRStopMultiplier<=0||ATRTrailMultiplier<=0||FastEMA<2||SlowEMA<=FastEMA||ATRPeriod<2||RSIPeriod<2||StructureLookback<4||MaxSpreadPoints<0)return INIT_PARAMETERS_INCORRECT;
  fast15=iMA(sym,PERIOD_M15,FastEMA,0,MODE_EMA,PRICE_CLOSE);slow15=iMA(sym,PERIOD_M15,SlowEMA,0,MODE_EMA,PRICE_CLOSE);fastH1=iMA(sym,PERIOD_H1,FastEMA,0,MODE_EMA,PRICE_CLOSE);slowH1=iMA(sym,PERIOD_H1,SlowEMA,0,MODE_EMA,PRICE_CLOSE);atrH=iATR(sym,PERIOD_M15,ATRPeriod);rsiH=iRSI(sym,PERIOD_M15,RSIPeriod,PRICE_CLOSE);
  if(fast15==INVALID_HANDLE||slow15==INVALID_HANDLE||fastH1==INVALID_HANDLE||slowH1==INVALID_HANDLE||atrH==INVALID_HANDLE||rsiH==INVALID_HANDLE)return INIT_FAILED;
- trade.SetExpertMagicNumber(MagicNumber);trade.SetDeviationInPoints(SlippagePoints);trade.SetTypeFillingBySymbol(sym);dayKey=DateKey();dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);dayLocked=false;
+ trade.SetExpertMagicNumber(MagicNumber);
+ trade.SetDeviationInPoints(SlippagePoints);
+ dayKey=DateKey();
+ dayStartEquity=AccountInfoDouble(ACCOUNT_EQUITY);
+ dayLocked=false;
  Print("GH V4 initialized; trading ",EnableTrading?"enabled":"DISABLED by default",". Compile, backtest and demo-test before live use.");return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason){if(fast15!=INVALID_HANDLE)IndicatorRelease(fast15);if(slow15!=INVALID_HANDLE)IndicatorRelease(slow15);if(fastH1!=INVALID_HANDLE)IndicatorRelease(fastH1);if(slowH1!=INVALID_HANDLE)IndicatorRelease(slowH1);if(atrH!=INVALID_HANDLE)IndicatorRelease(atrH);if(rsiH!=INVALID_HANDLE)IndicatorRelease(rsiH);}
