@@ -29,7 +29,13 @@ jobs:
             throw 'GoldHunterAI_V4.mq5 source is missing'
           }
 
-          Write-Host 'Source file verified.'
+          $text = Get-Content $source -Raw
+
+          if ($text -notmatch '#include\s*[<"]Trade[/\\]Trade\.mqh[>"]') {
+            throw 'Unexpected Trade.mqh include. Check the source file.'
+          }
+
+          Write-Host 'Source file and Trade.mqh include verified.'
 
       - name: Download MetaTrader installer
         shell: pwsh
@@ -52,19 +58,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList '/auto' `
-            -Wait
+          Start-Process -FilePath $installer -ArgumentList '/auto' -Wait
 
           $roots = @(
             'C:\Program Files',
             'C:\Program Files (x86)',
             $env:LOCALAPPDATA,
             $env:APPDATA
-          ) | Where-Object {
-            $_ -and (Test-Path $_)
-          } | Select-Object -Unique
+          ) | Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique
 
           $editor = Get-ChildItem `
             -Path $roots `
@@ -86,7 +88,7 @@ jobs:
 
           Write-Host "MetaEditor found: $($editor.FullName)"
 
-      - name: Prepare MQL5 standard library
+      - name: Prepare standard library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -94,12 +96,7 @@ jobs:
           $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
           $trade = Join-Path $include 'Trade\Trade.mqh'
 
-          if (Test-Path $trade -PathType Leaf) {
-            Write-Host 'MetaTrader standard Trade library found.'
-          }
-          else {
-            Write-Host 'Standard library missing; retrieving a community mirror.'
-
+          if (!(Test-Path $trade -PathType Leaf)) {
             $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
 
             git clone --depth 1 `
@@ -107,36 +104,31 @@ jobs:
               $mirror
 
             if ($LASTEXITCODE -ne 0) {
-              throw 'Could not retrieve the library mirror'
+              throw 'Could not retrieve the standard library mirror'
             }
 
-            $mirrorInclude = Join-Path `
-              $mirror 'MetaTrader 5\MQL5\Include'
-
-            $mirrorTrade = Join-Path `
-              $mirrorInclude 'Trade\Trade.mqh'
+            $mirrorInclude = Join-Path $mirror 'MetaTrader 5\MQL5\Include'
+            $mirrorTrade = Join-Path $mirrorInclude 'Trade\Trade.mqh'
 
             if (!(Test-Path $mirrorTrade -PathType Leaf)) {
-              throw 'Trade.mqh was not found in the library mirror'
+              throw 'Trade.mqh missing from library mirror'
             }
 
-            New-Item `
-              -ItemType Directory `
-              -Path $include `
-              -Force | Out-Null
+            New-Item -ItemType Directory -Path $include -Force |
+              Out-Null
 
             Copy-Item `
               -Path (Join-Path $mirrorInclude '*') `
               -Destination $include `
               -Recurse `
               -Force
-
-            if (!(Test-Path $trade -PathType Leaf)) {
-              throw 'Trade.mqh is still missing after library setup'
-            }
-
-            Write-Host 'Library files copied successfully.'
           }
+
+          if (!(Test-Path $trade -PathType Leaf)) {
+            throw 'Trade.mqh is missing from MetaEditor installation'
+          }
+
+          Write-Host "Verified library: $trade"
 
       - name: Compile V4
         shell: pwsh
@@ -146,32 +138,26 @@ jobs:
           $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
           $experts = Join-Path $env:MT5_ROOT 'MQL5\Experts'
           $expertSource = Join-Path $experts 'GoldHunterAI_V4.mq5'
+          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
           $log = Join-Path $env:RUNNER_TEMP 'GoldHunterAI_V4_compile.log'
           $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
 
-          if (!(Test-Path $source -PathType Leaf)) {
-            throw 'V4 source file not found'
-          }
-
-          New-Item `
-            -ItemType Directory `
-            -Path $experts `
-            -Force | Out-Null
-
-          New-Item `
-            -ItemType Directory `
-            -Path $out `
-            -Force | Out-Null
+          New-Item -ItemType Directory -Path $experts -Force |
+            Out-Null
+          New-Item -ItemType Directory -Path $out -Force |
+            Out-Null
 
           Copy-Item $source $expertSource -Force
 
-          $arguments = "/compile:`"$expertSource`" /log:`"$log`""
+          $arguments = "/compile:`"$expertSource`" /include:`"$include`" /log:`"$log`""
 
           $process = Start-Process `
             -FilePath $env:METAEDITOR_PATH `
             -ArgumentList $arguments `
             -Wait `
             -PassThru
+
+          Start-Sleep -Seconds 2
 
           if (!(Test-Path $log -PathType Leaf)) {
             throw "Compiler log missing. Exit code: $($process.ExitCode)"
@@ -180,18 +166,14 @@ jobs:
           $logText = Get-Content $log -Raw
           Write-Host $logText
 
-          Copy-Item `
-            $log `
-            (Join-Path $out 'GoldHunterAI_V4_compile.log') `
-            -Force
+          Copy-Item $log (Join-Path $out 'GoldHunterAI_V4_compile.log') -Force
 
-          $errors = [regex]::Match(
-            $logText,
-            '(?im)^\s*(\d+)\s+errors?\b'
-          )
+          if ($logText -match '(?im)\berror\s+\d+\s*:') {
+            throw 'Compiler reported an error. Review the compile log.'
+          }
 
-          if ($errors.Success -and [int]$errors.Groups[1].Value -gt 0) {
-            throw 'Compiler reported errors. Review the uploaded log.'
+          if ($logText -match '(?im)^\s*[1-9]\d*\s+errors?\b') {
+            throw 'Compiler reported errors. Review the compile log.'
           }
 
           $ex5 = Join-Path $experts 'GoldHunterAI_V4.ex5'
@@ -200,12 +182,8 @@ jobs:
             throw 'EX5 file was not produced'
           }
 
-          Copy-Item `
-            $ex5 `
-            (Join-Path $out 'GoldHunterAI_V4.ex5') `
-            -Force
-
-          Write-Host 'Compiled EX5 file created.'
+          Copy-Item $ex5 (Join-Path $out 'GoldHunterAI_V4.ex5') -Force
+          Write-Host 'EX5 file created successfully.'
 
       - name: Upload build results
         if: always()
