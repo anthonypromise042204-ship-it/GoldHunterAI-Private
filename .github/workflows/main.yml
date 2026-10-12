@@ -46,18 +46,15 @@ jobs:
             throw 'MetaTrader installer download failed'
           }
 
-      - name: Install MetaTrader 5
+            - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
-          Start-Process `
-            -FilePath $installer `
-            -ArgumentList '/auto' `
-            -Wait
+          Start-Process -FilePath $installer -ArgumentList '/auto' -Wait
 
-          $searchRoots = @(
+          $roots = @(
             'C:\Program Files',
             'C:\Program Files (x86)',
             $env:LOCALAPPDATA,
@@ -66,11 +63,8 @@ jobs:
             $_ -and (Test-Path $_)
           } | Select-Object -Unique
 
-          $editor = Get-ChildItem `
-            -Path $searchRoots `
-            -Filter 'metaeditor64.exe' `
-            -File `
-            -Recurse `
+          $editor = Get-ChildItem -Path $roots `
+            -Filter 'metaeditor64.exe' -File -Recurse `
             -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
@@ -83,6 +77,20 @@ jobs:
 
           Write-Host "MetaEditor found: $($editor.FullName)"
 
+          $trade = Get-ChildItem -Path $roots `
+            -Filter 'Trade.mqh' -File -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.FullName -match '\\MQL5\\Include\\Trade\\Trade\.mqh$'
+            } |
+            Select-Object -First 1
+
+          if ($trade) {
+            Write-Host "Trade library found: $($trade.FullName)"
+          } else {
+            Write-Host 'Trade.mqh is absent from the searched installation locations.'
+            Write-Host 'The compiler step will need a standard-library setup fix.'
+          }
       - name: Compile V4
         shell: pwsh
         run: |
