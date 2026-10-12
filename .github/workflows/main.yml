@@ -88,36 +88,50 @@ jobs:
 
           Write-Host "MetaEditor found: $($editor.FullName)"
 
-      - name: Prepare standard library
+        - name: Locate standard library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $tradeMqh = Join-Path $env:MT5_ROOT 'MQL5\Include\Trade\Trade.mqh'
+          $roots = @(
+            $env:MT5_ROOT,
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            $env:APPDATA,
+            $env:LOCALAPPDATA
+          ) | Where-Object {
+            $_ -and (Test-Path $_)
+          } | Select-Object -Unique
 
-          if (!(Test-Path $tradeMqh -PathType Leaf)) {
-            throw "Trade.mqh not found: $tradeMqh"
+          Write-Host 'Searching for MetaTrader Trade.mqh...'
+
+          $tradeFiles = foreach ($root in $roots) {
+            Get-ChildItem `
+              -Path $root `
+              -Filter 'Trade.mqh' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue
           }
 
-          $content = Get-Content $tradeMqh -Raw
+          $tradeFile = $tradeFiles |
+            Where-Object {
+              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+            } |
+            Select-Object -First 1
 
-          $matches = [regex]::Matches(
-            $content,
-            '(?<!:)\bIsStopped\(\)'
-          ).Count
-
-          if ($matches -eq 0) {
-            throw 'Expected IsStopped() call was not found. Standard library may have changed.'
+          if (!$tradeFile) {
+            throw 'Trade.mqh was not found. The installed MetaTrader files must be located or initialized before compilation.'
           }
 
-          $content = $content.Replace(
-            'IsStopped()',
-            '::IsStopped()'
-          )
+          Write-Host "Found standard library: $($tradeFile.FullName)"
 
-          Set-Content -Path $tradeMqh -Value $content -Encoding UTF8
+          $includeRoot = Split-Path `
+            (Split-Path $tradeFile.DirectoryName -Parent) `
+            -Parent
 
-          Write-Host "Applied IsStopped compatibility fix to $tradeMqh"
+          "MT5_INCLUDE_ROOT=$includeRoot" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Compile V4
         shell: pwsh
@@ -127,7 +141,7 @@ jobs:
           $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
           $experts = Join-Path $env:MT5_ROOT 'MQL5\Experts'
           $expertSource = Join-Path $experts 'GoldHunterAI_V4.mq5'
-          $include = Join-Path $env:MT5_ROOT 'MQL5'
+          $include = $env:MT5_INCLUDE_ROOT
           $log = Join-Path $env:RUNNER_TEMP 'GoldHunterAI_V4_compile.log'
           $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
 
