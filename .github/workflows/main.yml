@@ -109,8 +109,7 @@ jobs:
 
           "METAEDITOR_PATH=$($editor.FullName)" >> $env:GITHUB_ENV
           "TERMINAL_PATH=$($terminal.FullName)" >> $env:GITHUB_ENV
-
-      # 5. Initialize MetaTrader before searching for library files
+      # 5. Initialize MetaTrader terminal
       - name: Initialize MetaTrader terminal
         shell: pwsh
         run: |
@@ -135,4 +134,10 @@ jobs:
 
           Start-Sleep -Seconds 45
 
-          $running = Get-
+          $running = Get-Process -Id $process.Id -ErrorAction SilentlyContinue
+
+          if (!$running) {
+            throw "MetaTrader terminal exited during initialization."
+          }
+
+          Write-Host "MetaTrader terminal process is running."-
