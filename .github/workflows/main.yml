@@ -16,55 +16,74 @@ jobs:
     timeout-minutes: 25
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Verify source
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
+
           if (!(Test-Path $source -PathType Leaf)) {
             throw 'V4 source is missing'
           }
+
+          Write-Host 'V4 source file found.'
 
       - name: Download MetaTrader installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+
           Invoke-WebRequest `
             -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
             -OutFile $installer `
             -TimeoutSec 180
 
+          if (!(Test-Path $installer -PathType Leaf)) {
+            throw 'MetaTrader installer download failed'
+          }
+
       - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          Start-Process `
-            (Join-Path $env:RUNNER_TEMP 'mt5setup.exe') `
-            -ArgumentList '/auto' -Wait
+          $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
-          $editor = Get-ChildItem 'C:\Program Files' `
-            -Filter 'metaeditor64.exe' -Recurse `
+          Start-Process `
+            -FilePath $installer `
+            -ArgumentList '/auto' `
+            -Wait
+
+          $searchRoots = @(
+            'C:\Program Files',
+            'C:\Program Files (x86)',
+            $env:LOCALAPPDATA,
+            $env:APPDATA
+          ) | Where-Object {
+            $_ -and (Test-Path $_)
+          } | Select-Object -Unique
+
+          $editor = Get-ChildItem `
+            -Path $searchRoots `
+            -Filter 'metaeditor64.exe' `
+            -File `
+            -Recurse `
             -ErrorAction SilentlyContinue |
             Select-Object -First 1
 
           if (!$editor) {
-            $editor = Get-ChildItem $env:LOCALAPPDATA `
-              -Filter 'metaeditor64.exe' -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1
-          }
-
-          if (!$editor) {
-            throw 'MetaEditor not found'
+            throw 'MetaEditor executable not found after installation'
           }
 
           "METAEDITOR_PATH=$($editor.FullName)" |
-            Out-File $env:GITHUB_ENV -Append
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-            - name: Compile V4
+          Write-Host "MetaEditor found: $($editor.FullName)"
+
+      - name: Compile V4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -77,7 +96,11 @@ jobs:
             throw 'GoldHunterAI_V4.mq5 source file not found'
           }
 
-          # Locate the standard MQL5 Trade library.
+          if (!(Test-Path $env:METAEDITOR_PATH -PathType Leaf)) {
+            throw 'MetaEditor executable not found'
+          }
+
+          # Find the standard MQL5 Trade library.
           $searchRoots = @(
             'C:\Program Files',
             'C:\Program Files (x86)',
@@ -99,30 +122,31 @@ jobs:
             Select-Object -First 1
 
           if (!$trade) {
-            throw 'Trade.mqh not found. MetaTrader installation or standard library setup needs fixing.'
+            throw 'Trade.mqh not found. The MT5 standard library must be installed or initialized.'
           }
 
           Write-Host "Trade library found: $($trade.FullName)"
 
-          # Derive the MQL5 root from the library location.
+          # Get the MQL5 directory from the library path.
           $mql5Root = Split-Path `
             (Split-Path `
               (Split-Path $trade.FullName -Parent) -Parent) -Parent
 
           $experts = Join-Path $mql5Root 'Experts'
 
-          New-Item -ItemType Directory -Path $experts -Force |
-            Out-Null
+          New-Item `
+            -ItemType Directory `
+            -Path $experts `
+            -Force | Out-Null
 
           $expertSource = Join-Path $experts 'GoldHunterAI_V4.mq5'
+
           Copy-Item $source $expertSource -Force
 
-          New-Item -ItemType Directory -Path $out -Force |
-            Out-Null
-
-          if (!(Test-Path $env:METAEDITOR_PATH -PathType Leaf)) {
-            throw 'MetaEditor executable not found'
-          }
+          New-Item `
+            -ItemType Directory `
+            -Path $out `
+            -Force | Out-Null
 
           $arguments = "/compile:`"$expertSource`" /log:`"$log`""
 
@@ -140,27 +164,4 @@ jobs:
           Write-Host $logText
 
           Copy-Item $log `
-            (Join-Path $out 'GoldHunterAI_V4_compile.log') -Force
-
-          $ex5 = Join-Path $experts 'GoldHunterAI_V4.ex5'
-
-          if (!(Test-Path $ex5 -PathType Leaf)) {
-            throw 'Compilation did not produce GoldHunterAI_V4.ex5. Inspect the compiler log.'
-          }
-
-          Copy-Item $ex5 `
-            (Join-Path $out 'GoldHunterAI_V4.ex5') -Force
-
-          if ($logText -match '(?im)\b[1-9]\d*\s+errors?\b') {
-            throw 'Compiler errors found. Inspect the uploaded compile log.'
-          }
-
-          Write-Host 'EX5 file created and copied to build-output.'
-      - name: Upload build results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: GOLD-HUNTER-AI-V4-Build-Results
-          path: build-output/
-          if-no-files-found: warn
-          retention-days: 14
+            (Join-Path $out '
