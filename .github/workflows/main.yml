@@ -93,42 +93,31 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
-          $trade = Join-Path $include 'Trade\Trade.mqh'
+          $tradeMqh = Join-Path $env:MT5_ROOT 'MQL5\Include\Trade\Trade.mqh'
 
-          if (!(Test-Path $trade -PathType Leaf)) {
-            $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
-
-            git clone --depth 1 `
-              https://github.com/vmlellis/mt5-docker.git `
-              $mirror
-
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Could not retrieve the standard library mirror'
-            }
-
-            $mirrorInclude = Join-Path $mirror 'MetaTrader 5\MQL5\Include'
-            $mirrorTrade = Join-Path $mirrorInclude 'Trade\Trade.mqh'
-
-            if (!(Test-Path $mirrorTrade -PathType Leaf)) {
-              throw 'Trade.mqh missing from library mirror'
-            }
-
-            New-Item -ItemType Directory -Path $include -Force |
-              Out-Null
-
-            Copy-Item `
-              -Path (Join-Path $mirrorInclude '*') `
-              -Destination $include `
-              -Recurse `
-              -Force
+          if (!(Test-Path $tradeMqh -PathType Leaf)) {
+            throw "Trade.mqh not found: $tradeMqh"
           }
 
-          if (!(Test-Path $trade -PathType Leaf)) {
-            throw 'Trade.mqh is missing from MetaEditor installation'
+          $content = Get-Content $tradeMqh -Raw
+
+          $matches = [regex]::Matches(
+            $content,
+            '(?<!:)\bIsStopped\(\)'
+          ).Count
+
+          if ($matches -eq 0) {
+            throw 'Expected IsStopped() call was not found. Standard library may have changed.'
           }
 
-          Write-Host "Verified library: $trade"
+          $content = $content.Replace(
+            'IsStopped()',
+            '::IsStopped()'
+          )
+
+          Set-Content -Path $tradeMqh -Value $content -Encoding UTF8
+
+          Write-Host "Applied IsStopped compatibility fix to $tradeMqh"
 
       - name: Compile V4
         shell: pwsh
@@ -166,7 +155,8 @@ jobs:
           $logText = Get-Content $log -Raw
           Write-Host $logText
 
-          Copy-Item $log (Join-Path $out 'GoldHunterAI_V4_compile.log') -Force
+          Copy-Item $log `
+            (Join-Path $out 'GoldHunterAI_V4_compile.log') -Force
 
           if ($logText -match '(?im)\berror\s+\d+\s*:') {
             throw 'Compiler reported an error. Review the compile log.'
@@ -182,7 +172,9 @@ jobs:
             throw 'EX5 file was not produced'
           }
 
-          Copy-Item $ex5 (Join-Path $out 'GoldHunterAI_V4.ex5') -Force
+          Copy-Item $ex5 `
+            (Join-Path $out 'GoldHunterAI_V4.ex5') -Force
+
           Write-Host 'EX5 file created successfully.'
 
       - name: Upload build results
