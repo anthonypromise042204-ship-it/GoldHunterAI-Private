@@ -138,7 +138,7 @@ jobs:
           $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
           $experts = Join-Path $env:MT5_ROOT 'MQL5\Experts'
           $expertSource = Join-Path $experts 'GoldHunterAI_V4.mq5'
-          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $include = Join-Path $env:MT5_ROOT 'MQL5''
           $log = Join-Path $env:RUNNER_TEMP 'GoldHunterAI_V4_compile.log'
           $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
 
