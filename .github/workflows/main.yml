@@ -64,7 +64,7 @@ jobs:
           "METAEDITOR_PATH=$($editor.FullName)" |
             Out-File $env:GITHUB_ENV -Append
 
-      - name: Compile V4
+            - name: Compile V4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -156,7 +156,6 @@ jobs:
           }
 
           Write-Host 'EX5 file created and copied to build-output.'
-
       - name: Upload build results
         if: always()
         uses: actions/upload-artifact@v4
