@@ -56,14 +56,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
           if (!(Test-Path -LiteralPath $installer)) {
             throw "MetaTrader installer not found: $installer"
           }
 
-          Write-Host 'Starting MetaTrader 5 installation...'
+          Write-Host 'Starting MetaTrader 5 installation'
 
           $process = Start-Process `
             -FilePath $installer `
@@ -86,6 +85,54 @@ jobs:
           $editor = $null
 
           foreach ($root in $roots) {
+            Write-Host "Searching: $root"
+
+            $found = Get-ChildItem `
+              -LiteralPath $root `
+              -Filter 'metaeditor64.exe' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($found) {
+              $editor = $found
+              break
+            }
+          }
+
+          if (!$editor) {
+            throw 'MetaEditor64.exe was not found after installation.'
+          }
+
+          $mt5Root = $editor.DirectoryName
+
+          "METAEDITOR_PATH=$($editor.FullName)" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "MT5_ROOT=$mt5Root" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "MetaEditor found: $($editor.FullName)"
+          Write-Host "MetaTrader root: $mt5Root"
+
+          $tradeFile = Get-ChildItem `
+            -LiteralPath $mt5Root `
+            -Filter 'Trade.mqh' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+            } |
+            Select-Object -First 1
+
+          if ($tradeFile) {
+            Write-Host "Trade.mqh found: $($tradeFile.FullName)"
+          }
+          else {
+            Write-Warning 'Trade.mqh was not found. The next diagnostic step must locate the terminal data directory.'
+          }
 
       - name: Locate standard library
         shell: pwsh
