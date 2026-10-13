@@ -120,56 +120,70 @@ jobs:
           Write-Host "MetaEditor found: $($editor.FullName)"
           Write-Host "MetaTrader installation directory: $mt5Root"
 
-      - name: Locate standard library
+      - name: Diagnose MetaTrader library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           $roots = @(
-            $env:MT5_ROOT,
-            'C:\MT5',
             'C:\Program Files\MetaTrader 5',
-            'C:\Program Files (x86)\MetaTrader 5',
             "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\Programs"
-          ) | Where-Object {
-            $_ -and (Test-Path -LiteralPath $_)
-          } | Select-Object -Unique
-
-          $tradeFile = $null
+            "$env:LOCALAPPDATA\MetaQuotes\Terminal",
+            "$env:USERPROFILE\AppData\Roaming\MetaQuotes\Terminal"
+          )
 
           foreach ($root in $roots) {
-            Write-Host "Searching for Trade.mqh under $root"
+            if (Test-Path -LiteralPath $root) {
+              Write-Host "Inspecting: $root"
 
-            $candidate = Get-ChildItem `
-              -LiteralPath $root `
-              -Filter 'Trade.mqh' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Where-Object {
-                $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
-              } |
-              Select-Object -First 1
-
-            if ($candidate) {
-              $tradeFile = $candidate
-              break
+              Get-ChildItem `
+                -LiteralPath $root `
+                -Directory `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 15 -ExpandProperty FullName
+            }
+            else {
+              Write-Host "Directory does not exist: $root"
             }
           }
 
-          if (!$tradeFile) {
-            throw 'Trade.mqh was not found. The MQL5 standard library must be located or provisioned before compilation.'
+          $terminalExe = Join-Path $env:MT5_ROOT 'terminal64.exe'
+
+          if (Test-Path -LiteralPath $terminalExe) {
+            Write-Host "Terminal executable exists: $terminalExe"
+          }
+          else {
+            Write-Host "Terminal executable not found: $terminalExe"
           }
 
-          $includeRoot = $tradeFile.FullName -replace '[\\/]Trade[\\/]Trade\.mqh$', ''
+          $includeDir = Join-Path $env:MT5_ROOT 'MQL5\Include'
 
-          Write-Host "Trade.mqh found: $($tradeFile.FullName)"
-          Write-Host "Include root: $includeRoot"
+          if (Test-Path -LiteralPath $includeDir) {
+            Write-Host "Include directory exists: $includeDir"
 
-          "MT5_INCLUDE_ROOT=$includeRoot" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Get-ChildItem `
+              -LiteralPath $includeDir `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 20 -ExpandProperty Name
+          }
+          else {
+            Write-Host "Include directory missing: $includeDir"
+          }
 
+          $tradeFile = Get-ChildItem `
+            -LiteralPath $env:MT5_ROOT `
+            -Filter 'Trade.mqh' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+
+          if ($tradeFile) {
+            Write-Host "Trade.mqh found: $($tradeFile.FullName)"
+          }
+          else {
+            Write-Host 'Trade.mqh is absent from the installation directory.'
+          }
       - name: Compile V4
         shell: pwsh
         run: |
