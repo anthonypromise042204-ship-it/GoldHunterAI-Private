@@ -88,47 +88,58 @@ jobs:
 
           Write-Host "MetaEditor found: $($editor.FullName)"
 
-      - name: Locate standard library
+            - name: Locate standard library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $roots = @(
+          Write-Host 'Searching for MetaTrader 5 standard library...'
+
+          $searchRoots = @(
             $env:MT5_ROOT,
+            'C:\MT5',
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
-            $env:APPDATA,
-            $env:LOCALAPPDATA
+            "$env:APPDATA\MetaQuotes\Terminal",
+            "$env:LOCALAPPDATA\Programs"
           ) | Where-Object {
-            $_ -and (Test-Path $_)
+            $_ -and (Test-Path -LiteralPath $_)
           } | Select-Object -Unique
 
-          Write-Host 'Searching for MetaTrader Trade.mqh...'
+          $tradeFile = $null
 
-          $tradeFiles = foreach ($root in $roots) {
-            Get-ChildItem `
-              -Path $root `
+          foreach ($root in $searchRoots) {
+            Write-Host "Searching: $root"
+
+            $candidate = Get-ChildItem `
+              -LiteralPath $root `
               -Filter 'Trade.mqh' `
               -File `
               -Recurse `
-              -ErrorAction SilentlyContinue
-          }
+              -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+              } |
+              Select-Object -First 1
 
-          $tradeFile = $tradeFiles |
-            Where-Object {
-              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
-            } |
-            Select-Object -First 1
+            if ($candidate) {
+              $tradeFile = $candidate
+              break
+            }
+          }
 
           if (!$tradeFile) {
-            throw 'Trade.mqh was not found. The installed MetaTrader files must be located or initialized before compilation.'
+            Write-Host 'MetaTrader installation folders:'
+            Get-ChildItem 'C:\' -Directory -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+
+            throw 'Trade.mqh not found. Check the MetaTrader installation and terminal data folders.'
           }
 
-          Write-Host "Found standard library: $($tradeFile.FullName)"
+          $includeRoot = $tradeFile.FullName -replace '[\\/]Trade[\\/]Trade\.mqh$', ''
 
-          $includeRoot = Split-Path `
-            (Split-Path $tradeFile.DirectoryName -Parent) `
-            -Parent
+          Write-Host "Found library: $($tradeFile.FullName)"
+          Write-Host "Include root: $includeRoot"
 
           "MT5_INCLUDE_ROOT=$includeRoot" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
