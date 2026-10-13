@@ -37,20 +37,29 @@ jobs:
 
           Write-Host 'Source file and Trade.mqh include verified.'
 
-      - name: Download MetaTrader installer
+      - name: Install MetaTrader 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
-          Invoke-WebRequest `
-            -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
-            -OutFile $installer `
-            -TimeoutSec 180
-
-          if (!(Test-Path $installer -PathType Leaf)) {
-            throw 'MetaTrader installer download failed'
+          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Installer not found: $installer"
           }
+
+          Write-Host 'Launching MetaTrader installer...'
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList '/auto' `
+            -Wait `
+            -PassThru
+
+          Write-Host "Installer exit code: $($process.ExitCode)"
+
+          $searchRoots = @(
+            'C:\Program Files',
+            'C:\Program Files (
 
       - name: Install MetaTrader 5
         shell: pwsh
