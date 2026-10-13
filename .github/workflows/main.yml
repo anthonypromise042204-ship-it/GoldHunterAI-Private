@@ -56,37 +56,36 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
-          Start-Process -FilePath $installer -ArgumentList '/auto' -Wait
-
-          $roots = @(
-            'C:\Program Files',
-            'C:\Program Files (x86)',
-            $env:LOCALAPPDATA,
-            $env:APPDATA
-          ) | Where-Object { $_ -and (Test-Path $_) } |
-            Select-Object -Unique
-
-          $editor = Get-ChildItem `
-            -Path $roots `
-            -Filter 'metaeditor64.exe' `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if (!$editor) {
-            throw 'MetaEditor executable not found'
+          if (!(Test-Path -LiteralPath $installer)) {
+            throw "MetaTrader installer not found: $installer"
           }
 
-          "METAEDITOR_PATH=$($editor.FullName)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host 'Starting MetaTrader 5 installation...'
 
-          "MT5_ROOT=$($editor.DirectoryName)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList '/auto' `
+            -Wait `
+            -PassThru
 
-          Write-Host "MetaEditor found: $($editor.FullName)"
+          Write-Host "Installer exit code: $($process.ExitCode)"
+
+          $roots = @(
+            'C:\MT5',
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            $env:LOCALAPPDATA,
+            $env:APPDATA
+          ) | Where-Object {
+            $_ -and (Test-Path -LiteralPath $_)
+          } | Select-Object -Unique
+
+          $editor = $null
+
+          foreach ($root in $roots) {
 
       - name: Locate standard library
         shell: pwsh
