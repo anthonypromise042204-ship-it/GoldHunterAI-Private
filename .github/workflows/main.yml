@@ -100,56 +100,42 @@ jobs:
               Write-Host "Not found: $path"
             }
           }
-
-      - name: Prepare MQL5 standard library
+          
+      - name: Diagnose MQL5 standard library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
-          $trade = Join-Path $include 'Trade\Trade.mqh'
+          $terminalRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+          $expected = Join-Path $env:MT5_ROOT 'MQL5\Include\Trade\Trade.mqh'
 
-          if (Test-Path $trade -PathType Leaf) {
-            Write-Host "Found Trade.mqh: $trade"
+          Write-Host "Expected library: $expected"
+          Write-Host "Terminal data root: $terminalRoot"
+
+          if (Test-Path $expected -PathType Leaf) {
+            Write-Host "Trade.mqh is available at the expected path."
           }
-          else {
-            Write-Host "Trade.mqh is missing. Searching the installed MetaTrader directories."
+          elseif (Test-Path $terminalRoot -PathType Container) {
+            $matches = Get-ChildItem `
+              -Path $terminalRoot `
+              -Filter 'Trade.mqh' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 10
 
-            $searchRoots = @(
-              (Join-Path $env:APPDATA 'MetaQuotes\Terminal'),
-              $env:MT5_ROOT
-            ) | Where-Object { $_ -and (Test-Path $_) }
-
-            $found = $null
-
-            foreach ($root in $searchRoots) {
-              $candidate = Get-ChildItem -Path $root `
-                -Filter 'Trade.mqh' -File -Recurse `
-                -ErrorAction SilentlyContinue |
-                Where-Object { $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$' } |
-                Select-Object -First 1
-
-              if ($candidate) {
-                $found = $candidate.FullName
-                break
+            if ($matches) {
+              foreach ($match in $matches) {
+                Write-Host "FOUND: $($match.FullName)"
               }
             }
-
-            if ($found) {
-              Write-Host "Found standard library file: $found"
-              New-Item -ItemType Directory -Path (Split-Path $trade) -Force | Out-Null
-              Copy-Item -LiteralPath $found -Destination $trade -Force
-            }
             else {
-              throw "Trade.mqh was not found in the installed MetaTrader directories. Check the MT5 installation and library paths."
+              Write-Host "Trade.mqh was not found under the terminal data directory."
             }
           }
-
-          if (!(Test-Path $trade -PathType Leaf)) {
-            throw "Trade.mqh is still missing: $trade"
+          else {
+            Write-Host "The terminal data directory does not exist."
           }
-
-          Write-Host "Verified standard library: $trade"
 
       - name: Compile V4
         shell: pwsh
