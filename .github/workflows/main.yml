@@ -74,6 +74,10 @@ jobs:
           New-Item -ItemType Directory -Path $installPath -Force |
             Out-Null
 
+          Write-Host "Installer: $installer"
+          Write-Host "Requested installation path: $installPath"
+          Write-Host "Installer size: $((Get-Item $installer).Length) bytes"
+
           $process = Start-Process `
             -FilePath $installer `
             -ArgumentList @('/auto', "/path:$installPath") `
@@ -82,23 +86,54 @@ jobs:
 
           Write-Host "Installer exit code: $($process.ExitCode)"
 
-          Start-Sleep -Seconds 5
+          Start-Sleep -Seconds 10
 
-          $editor = Get-ChildItem `
-            -Path 'C:\Program Files','C:\Program Files (x86)' `
-            -Filter 'MetaEditor64.exe' `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
+          $searchPaths = @(
+            $installPath,
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            "$env:APPDATA\MetaQuotes\Terminal"
+          )
+
+          $editor = $null
+
+          foreach ($path in $searchPaths) {
+            if (Test-Path $path -PathType Container) {
+              Write-Host "Checking: $path"
+
+              $editor = Get-ChildItem `
+                -Path $path `
+                -Filter 'MetaEditor64.exe' `
+                -File `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+
+              if ($editor) {
+                break
+              }
+            }
+          }
 
           if (!$editor) {
             @(
               "Installer exit code: $($process.ExitCode)"
-              'MetaEditor64.exe was not found.'
+              "Requested path: $installPath"
+              "Installer size: $((Get-Item $installer).Length)"
+              "MetaEditor64.exe found: False"
+              "PowerShell version: $($PSVersionTable.PSVersion)"
             ) | Set-Content $report
 
-            throw 'MetaEditor was not found after installation.'
+            Write-Host 'MetaEditor was not found.'
+            Write-Host 'Installation diagnostics:'
+            Get-ChildItem `
+              -Path 'C:\Program Files','C:\Program Files (x86)' `
+              -Directory `
+              -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName |
+              Write-Host
+
+            throw 'MetaEditor installation or discovery failed.'
           }
 
           $root = $editor.DirectoryName
@@ -113,8 +148,6 @@ jobs:
             "Installer exit code: $($process.ExitCode)"
             "MetaEditor: $($editor.FullName)"
             "MetaTrader root: $root"
-            "MQL5 directory exists: $(Test-Path "$root\MQL5")"
-            "Include directory exists: $(Test-Path "$root\MQL5\Include")"
             "Trade.mqh exists: $(Test-Path "$root\MQL5\Include\Trade\Trade.mqh")"
           ) | Set-Content $report
 
