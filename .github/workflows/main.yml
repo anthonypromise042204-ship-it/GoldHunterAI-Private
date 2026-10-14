@@ -46,7 +46,6 @@ jobs:
           if (!(Test-Path $installer -PathType Leaf) -or (Get-Item $installer).Length -lt 1MB) {
             throw 'MetaTrader installer download failed or returned an unexpectedly small file.'
           }
-
       - name: Install MetaTrader 5
         shell: pwsh
         run: |
@@ -87,6 +86,20 @@ jobs:
 
           Write-Host "MetaEditor found: $($editor.FullName)"
           Write-Host "MetaTrader root: $($editor.DirectoryName)"
+          Write-Host "Checking for the standard MQL5 Trade library..."
+
+          $possibleTradePaths = @(
+            (Join-Path $editor.DirectoryName 'MQL5\Include\Trade\Trade.mqh'),
+            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
+          )
+
+          foreach ($path in $possibleTradePaths) {
+            if (Test-Path $path) {
+              Write-Host "Found path: $path"
+            } else {
+              Write-Host "Not found: $path"
+            }
+          }
 
       - name: Prepare MQL5 standard library
         shell: pwsh
