@@ -5,7 +5,7 @@
 #property strict
 #property version "4.00"
 #property description "Structure-confirmed, multi-timeframe trend EA"
-#include <Trade/Trade.mqh>
+#include <Trade\Trade.mqh>
 CTrade trade;
 
 input string InpSymbol="";                 // Blank = chart symbol
