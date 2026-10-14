@@ -92,36 +92,51 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
+
           $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
           $trade = Join-Path $include 'Trade\Trade.mqh'
 
           if (Test-Path $trade -PathType Leaf) {
-            Write-Host 'MetaTrader standard Trade library found.'
+            Write-Host "Found Trade.mqh: $trade"
           }
           else {
-            Write-Host 'Standard library missing; retrieving a community mirror.'
-            $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
+            Write-Host "Trade.mqh is missing. Searching the installed MetaTrader directories."
 
-            git clone --depth 1 https://github.com/vmlellis/mt5-docker.git $mirror
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Could not retrieve the MQL5 library mirror.'
+            $searchRoots = @(
+              (Join-Path $env:APPDATA 'MetaQuotes\Terminal'),
+              $env:MT5_ROOT
+            ) | Where-Object { $_ -and (Test-Path $_) }
+
+            $found = $null
+
+            foreach ($root in $searchRoots) {
+              $candidate = Get-ChildItem -Path $root `
+                -Filter 'Trade.mqh' -File -Recurse `
+                -ErrorAction SilentlyContinue |
+                Where-Object { $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$' } |
+                Select-Object -First 1
+
+              if ($candidate) {
+                $found = $candidate.FullName
+                break
+              }
             }
 
-            $mirrorInclude = Join-Path $mirror 'MetaTrader 5\MQL5\Include'
-            $mirrorTrade = Join-Path $mirrorInclude 'Trade\Trade.mqh'
-
-            if (!(Test-Path $mirrorTrade -PathType Leaf)) {
-              throw 'Trade.mqh was not found at the expected path in the library mirror.'
+            if ($found) {
+              Write-Host "Found standard library file: $found"
+              New-Item -ItemType Directory -Path (Split-Path $trade) -Force | Out-Null
+              Copy-Item -LiteralPath $found -Destination $trade -Force
             }
-
-            New-Item -ItemType Directory -Path $include -Force | Out-Null
-            Copy-Item -Path (Join-Path $mirrorInclude '*') -Destination $include -Recurse -Force
-
-            if (!(Test-Path $trade -PathType Leaf)) {
-              throw 'Trade.mqh is still missing after library setup.'
+            else {
+              throw "Trade.mqh was not found in the installed MetaTrader directories. Check the MT5 installation and library paths."
             }
-            Write-Host 'Library files copied successfully.'
           }
+
+          if (!(Test-Path $trade -PathType Leaf)) {
+            throw "Trade.mqh is still missing: $trade"
+          }
+
+          Write-Host "Verified standard library: $trade"
 
       - name: Compile V4
         shell: pwsh
