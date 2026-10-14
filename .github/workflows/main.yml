@@ -52,6 +52,11 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
 
+          Write-Host "Installer exists: $(Test-Path $installer)"
+          if (!(Test-Path $installer -PathType Leaf)) {
+            throw "Installer not found: $installer"
+          }
+
           $install = Start-Process `
             -FilePath $installer `
             -ArgumentList '/auto' `
@@ -60,46 +65,47 @@ jobs:
 
           Write-Host "Installer exit code: $($install.ExitCode)"
 
-          $roots = @(
-            'C:\Program Files',
-            'C:\Program Files (x86)',
-            $env:LOCALAPPDATA,
-            $env:APPDATA
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
-          $editor = Get-ChildItem `
-            -Path $roots `
-            -Filter 'metaeditor64.exe' `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Select-Object -First 1
-
-          if (!$editor) {
-            throw 'MetaEditor executable not found after installation.'
-          }
-
-          "METAEDITOR_PATH=$($editor.FullName)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "MT5_ROOT=$($editor.DirectoryName)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "MetaEditor found: $($editor.FullName)"
-          Write-Host "MetaTrader root: $($editor.DirectoryName)"
-          Write-Host "Checking for the standard MQL5 Trade library..."
-
-          $possibleTradePaths = @(
-            (Join-Path $editor.DirectoryName 'MQL5\Include\Trade\Trade.mqh'),
-            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
+          $editorPaths = @(
+            'C:\Program Files\MetaTrader 5\MetaEditor64.exe',
+            'C:\Program Files (x86)\MetaTrader 5\MetaEditor64.exe'
           )
 
-          foreach ($path in $possibleTradePaths) {
-            if (Test-Path $path) {
-              Write-Host "Found path: $path"
-            } else {
-              Write-Host "Not found: $path"
+          $editorPath = $editorPaths |
+            Where-Object { Test-Path $_ -PathType Leaf } |
+            Select-Object -First 1
+
+          if (!$editorPath) {
+            $editor = Get-ChildItem `
+              -Path 'C:\Program Files','C:\Program Files (x86)' `
+              -Filter 'MetaEditor64.exe' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($editor) {
+              $editorPath = $editor.FullName
             }
           }
+
+          if (!$editorPath) {
+            throw "MetaEditor64.exe was not found."
+          }
+
+          $mt5Root = Split-Path $editorPath -Parent
+          $include = Join-Path $mt5Root 'MQL5\Include'
+          $trade = Join-Path $include 'Trade\Trade.mqh'
+
+          "METAEDITOR_PATH=$editorPath" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          "MT5_ROOT=$mt5Root" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "MetaEditor: $editorPath"
+          Write-Host "MetaTrader root: $mt5Root"
+          Write-Host "Include directory exists: $(Test-Path $include)"
+          Write-Host "Trade.mqh exists: $(Test-Path $trade)"
           
       - name: Prepare MQL5 standard library
         shell: pwsh
