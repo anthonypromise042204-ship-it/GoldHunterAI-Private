@@ -101,41 +101,77 @@ jobs:
             }
           }
           
-      - name: Diagnose MQL5 standard library
+      - name: Prepare MQL5 standard library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           $terminalRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-          $expected = Join-Path $env:MT5_ROOT 'MQL5\Include\Trade\Trade.mqh'
+          $targetInclude = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $targetTrade = Join-Path $targetInclude 'Trade\Trade.mqh'
 
-          Write-Host "Expected library: $expected"
+          Write-Host "MetaTrader root: $env:MT5_ROOT"
           Write-Host "Terminal data root: $terminalRoot"
+          Write-Host "Target library: $targetTrade"
 
-          if (Test-Path $expected -PathType Leaf) {
-            Write-Host "Trade.mqh is available at the expected path."
-          }
-          elseif (Test-Path $terminalRoot -PathType Container) {
-            $matches = Get-ChildItem `
-              -Path $terminalRoot `
-              -Filter 'Trade.mqh' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 10
-
-            if ($matches) {
-              foreach ($match in $matches) {
-                Write-Host "FOUND: $($match.FullName)"
-              }
-            }
-            else {
-              Write-Host "Trade.mqh was not found under the terminal data directory."
-            }
+          if (Test-Path $targetTrade -PathType Leaf) {
+            Write-Host "Trade.mqh already exists in the target directory."
           }
           else {
-            Write-Host "The terminal data directory does not exist."
+            if (-not (Test-Path $terminalRoot -PathType Container)) {
+              throw "MetaTrader terminal data directory was not found: $terminalRoot"
+            }
+
+            $matches = @(
+              Get-ChildItem `
+                -Path $terminalRoot `
+                -Filter 'Trade.mqh' `
+                -File `
+                -Recurse `
+                -ErrorAction SilentlyContinue
+            )
+
+            $sourceInclude = $null
+
+            foreach ($match in $matches) {
+              $candidateInclude = Split-Path `
+                (Split-Path $match.FullName -Parent) -Parent
+
+              if (
+                (Split-Path $candidateInclude -Leaf) -eq 'Include' -and
+                (Test-Path (Join-Path $candidateInclude 'Trade\Trade.mqh') -PathType Leaf)
+              ) {
+                $sourceInclude = $candidateInclude
+                break
+              }
+            }
+
+            if (-not $sourceInclude) {
+              throw "Could not find a valid MQL5 Include folder containing Trade\Trade.mqh."
+            }
+
+            Write-Host "Source Include folder: $sourceInclude"
+
+            New-Item `
+              -ItemType Directory `
+              -Path $targetInclude `
+              -Force | Out-Null
+
+            Copy-Item `
+              -Path (Join-Path $sourceInclude '*') `
+              -Destination $targetInclude `
+              -Recurse `
+              -Force
+
+            Write-Host "Copied the MQL5 Include folder."
           }
+
+          if (-not (Test-Path $targetTrade -PathType Leaf)) {
+            throw "Trade.mqh is still missing after preparation: $targetTrade"
+          }
+
+          Write-Host "SUCCESS: Trade.mqh is available for compilation."
+          Get-Item $targetTrade | Select-Object FullName, Length
 
       - name: Compile V4
         shell: pwsh
