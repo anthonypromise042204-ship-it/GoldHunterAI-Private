@@ -104,64 +104,63 @@ jobs:
             Format-List Status, StatusMessage
 
           Write-Host 'Installer inspection complete.'
-      - name: Check existing MetaEditor installations
+      - name: Diagnose MetaEditor installation
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
+          $installer = "$env:RUNNER_TEMP\mt5setup.exe"
           $report = "$env:GITHUB_WORKSPACE\build-output\environment-diagnostics.txt"
+
+          if (!(Test-Path $installer -PathType Leaf)) {
+            throw 'MetaTrader installer was not found.'
+          }
+
+          $version = (Get-Item $installer).VersionInfo
+          $signature = Get-AuthenticodeSignature $installer
+
+          Write-Host '--- Installer information ---'
+          Write-Host "Description: $($version.FileDescription)"
+          Write-Host "Product: $($version.ProductName)"
+          Write-Host "Company: $($version.CompanyName)"
+          Write-Host "Version: $($version.FileVersion)"
+          Write-Host "Signature: $($signature.Status)"
+          Write-Host "Signer: $($signature.SignerCertificate.Subject)"
+
+          @(
+            "Installer description: $($version.FileDescription)"
+            "Installer product: $($version.ProductName)"
+            "Installer company: $($version.CompanyName)"
+            "Installer version: $($version.FileVersion)"
+            "Signature status: $($signature.Status)"
+            "Signer: $($signature.SignerCertificate.Subject)"
+          ) | Set-Content $report
+
+          Write-Host '--- Searching for MetaEditor ---'
 
           $searchPaths = @(
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
             "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\Programs\MetaTrader 5"
+            "$env:LOCALAPPDATA\Programs"
           )
 
-          $editor = $null
-
           foreach ($path in $searchPaths) {
-            if (!(Test-Path $path -PathType Container)) {
-              continue
-            }
+            if (Test-Path $path -PathType Container) {
+              Write-Host "Searching: $path"
 
-            Write-Host "Searching: $path"
-
-            $editor = Get-ChildItem `
-              -Path $path `
-              -Filter 'MetaEditor64.exe' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1
-
-            if ($editor) {
-              break
+              Get-ChildItem `
+                -Path $path `
+                -Filter 'MetaEditor64.exe' `
+                -File `
+                -Recurse `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 5 -ExpandProperty FullName |
+                ForEach-Object { Write-Host "Found: $_" }
             }
           }
 
-          if (!$editor) {
-            Add-Content $report ''
-            Add-Content $report 'MetaEditor64.exe was not found.'
-            Add-Content $report 'Installation must be resolved before compilation.'
-
-            throw 'MetaEditor64.exe was not found. Review the installer diagnostics.'
-          }
-
-          $editorPath = $editor.FullName
-          $root = $editor.DirectoryName
-
-          Write-Host "MetaEditor: $editorPath"
-          Write-Host "Detected directory: $root"
-
-          "METAEDITOR_PATH=$editorPath" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          "MT5_ROOT=$root" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Add-Content $report "MetaEditor: $editorPath"
-          Add-Content $report "Detected directory: $root"
+          Write-Host 'Diagnostics complete.'
 
       - name: Find and prepare standard library
         shell: pwsh
