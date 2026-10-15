@@ -162,91 +162,70 @@ jobs:
 
           Write-Host 'Diagnostics complete.'
 
-      - name: Find and prepare standard library
+      - name: Locate and prepare MQL5 Standard Library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $root = $env:MT5_ROOT
-          $targetInclude = "$root\MQL5\Include"
-          $targetTrade = "$targetInclude\Trade\Trade.mqh"
-          $report = "$env:GITHUB_WORKSPACE\build-output\environment-diagnostics.txt"
+          Write-Host "Searching for the official MQL5 Trade.mqh file..."
 
           $searchRoots = @(
-            "$root\MQL5",
+            "C:\MT5",
+            "C:\Program Files\MetaTrader 5",
+            "C:\Program Files (x86)\MetaTrader 5",
             "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\MetaQuotes\Terminal"
-          ) | Where-Object {
-            $_ -and (Test-Path $_ -PathType Container)
-          } | Select-Object -Unique
+            "$env:LOCALAPPDATA\Programs",
+            "$env:USERPROFILE\AppData\Roaming\MetaQuotes\Terminal"
+          )
 
-          Add-Content $report ''
-          Add-Content $report '--- Standard library search ---'
+          $tradeFile = $null
 
-          if (!(Test-Path $targetTrade -PathType Leaf)) {
-            $sourceInclude = $null
-
-            foreach ($searchRoot in $searchRoots) {
-              Write-Host "Searching for Trade.mqh in: $searchRoot"
+          foreach ($root in $searchRoots) {
+            if (Test-Path $root) {
+              Write-Host "Searching: $root"
 
               $found = Get-ChildItem `
-                -Path $searchRoot `
-                -Filter 'Trade.mqh' `
+                -Path $root `
+                -Filter "Trade.mqh" `
                 -File `
                 -Recurse `
-                -ErrorAction SilentlyContinue
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 1
 
-              foreach ($item in $found) {
-                Add-Content $report "Candidate: $($item.FullName)"
-
-                $candidate = Split-Path `
-                  (Split-Path $item.FullName -Parent) -Parent
-
-                if (
-                  (Split-Path $candidate -Leaf) -eq 'Include' -and
-                  (Test-Path "$candidate\Trade\Trade.mqh" -PathType Leaf)
-                ) {
-                  $sourceInclude = $candidate
-                  break
-                }
-              }
-
-              if ($sourceInclude) {
+              if ($found) {
+                $tradeFile = $found.FullName
                 break
               }
             }
-
-            if (!$sourceInclude) {
-              Add-Content $report 'RESULT: Trade.mqh not found.'
-
-              throw 'Trade.mqh is missing. Install or locate the official MQL5 standard library.'
-            }
-
-            Write-Host "Library source: $sourceInclude"
-
-            New-Item `
-              -ItemType Directory `
-              -Path $targetInclude `
-              -Force | Out-Null
-
-            Copy-Item `
-              -Path "$sourceInclude\*" `
-              -Destination $targetInclude `
-              -Recurse `
-              -Force
           }
 
-          if (!(Test-Path $targetTrade -PathType Leaf)) {
-            throw "Trade.mqh is still missing: $targetTrade"
+          if (-not $tradeFile) {
+            Write-Host "Trade.mqh was not found."
+            Write-Host "Checking whether MetaTrader installation files exist..."
+
+            Get-ChildItem `
+              -Path "C:\MT5","C:\Program Files\MetaTrader 5" `
+              -ErrorAction SilentlyContinue |
+              Select-Object FullName
+
+            throw "Trade.mqh is absent from the searched locations. The MQL5 Standard Library must be installed or restored before compilation."
           }
 
-          $tradeFile = Get-Item $targetTrade
+          Write-Host "Found Trade.mqh: $tradeFile"
 
-          Add-Content $report "Trade.mqh: $targetTrade"
-          Add-Content $report "Trade.mqh size: $($tradeFile.Length)"
+          $includeDir = Split-Path `
+            (Split-Path $tradeFile -Parent) `
+            -Parent
 
-          Write-Host 'Standard library check passed.'
+          if (-not (Test-Path (Join-Path $includeDir "Trade"))) {
+            throw "The expected MQL5 Include\Trade directory is missing: $includeDir"
+          }
 
+          "MQL5_INCLUDE=$includeDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "MQL5 Include directory: $includeDir"
+          Write-Host "Standard Library located successfully."
       - name: Compile V4
         shell: pwsh
         run: |
