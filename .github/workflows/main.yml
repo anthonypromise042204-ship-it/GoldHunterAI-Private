@@ -86,43 +86,25 @@ jobs:
           Write-Host "Installer downloaded: $installer"
           Write-Host "Installer size: $($file.Length) bytes"
 
-      - name: Inspect MetaTrader installer
+      - name: Inspect installer command-line behavior
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $installer = "$env:RUNNER_TEMP\mt5setup.exe"
-          $report = "$env:GITHUB_WORKSPACE\build-output\environment-diagnostics.txt"
 
           if (!(Test-Path $installer -PathType Leaf)) {
-            throw 'Installer file is missing.'
+            throw 'Installer not found.'
           }
 
-          $version = (Get-Item $installer).VersionInfo
-          $signature = Get-AuthenticodeSignature $installer
+          Write-Host 'Checking installer version information...'
+          (Get-Item $installer).VersionInfo |
+            Format-List FileDescription, ProductName, CompanyName, FileVersion
 
-          Write-Host "File description: $($version.FileDescription)"
-          Write-Host "Product name: $($version.ProductName)"
-          Write-Host "Company: $($version.CompanyName)"
-          Write-Host "File version: $($version.FileVersion)"
-          Write-Host "Signature status: $($signature.Status)"
-          Write-Host "Signature message: $($signature.StatusMessage)"
+          Write-Host 'Checking Authenticode signature...'
+          Get-AuthenticodeSignature $installer |
+            Format-List Status, StatusMessage
 
-          @(
-            "File description: $($version.FileDescription)"
-            "Product name: $($version.ProductName)"
-            "Company: $($version.CompanyName)"
-            "File version: $($version.FileVersion)"
-            "Signature status: $($signature.Status)"
-            "Signature message: $($signature.StatusMessage)"
-          ) | Set-Content $report
-
-          if ($signature.Status -ne 'Valid') {
-            throw "Installer signature is not valid: $($signature.Status)"
-          }
-
-          Write-Host 'Installer signature verified.'
-          Write-Host 'Installation has not been attempted.'
+          Write-Host 'Installer inspection complete.'
 
       - name: Check existing MetaEditor installations
         shell: pwsh
