@@ -6,14 +6,13 @@ on:
     paths:
       - "GoldHunterAI_V4.mq5"
       - ".github/workflows/main.yml"
-      - ".github/workflows/gold-hunter-v4.yml"
 
 permissions:
   contents: read
 
 jobs:
   compile:
-    name: Install MT5 and Compile GoldHunterAI V4
+    name: Compile GoldHunterAI V4
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -21,73 +20,54 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Prepare build output and verify source
+      - name: Verify EA source
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
+          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
           $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
+
           New-Item -ItemType Directory -Path $out -Force | Out-Null
 
-          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
-
           if (!(Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw "GoldHunterAI_V4.mq5 is missing from the repository root."
+            throw 'GoldHunterAI_V4.mq5 is missing from the repository root.'
           }
 
-          $file = Get-Item -LiteralPath $source
           $hash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash
-
           @(
-            "Source: $($file.FullName)"
-            "Size: $($file.Length) bytes"
+            "Source: $source"
             "SHA256: $hash"
             "Commit: $env:GITHUB_SHA"
-            "Run ID: $env:GITHUB_RUN_ID"
-            "Runner OS: $env:RUNNER_OS"
           ) | Set-Content (Join-Path $out 'environment-diagnostics.txt')
 
-          Write-Host "Source verified: $($file.FullName)"
-          Write-Host "SHA256: $hash"
+          Write-Host "Source verified: $source"
 
-      - name: Download official MetaTrader 5 installer
+      - name: Download MetaTrader 5 installer
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
-          $url = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
 
-          Invoke-WebRequest -Uri $url -OutFile $installer -TimeoutSec 240
-
-          if (!(Test-Path -LiteralPath $installer -PathType Leaf)) {
-            throw 'MT5 installer download failed.'
-          }
-
-          $file = Get-Item -LiteralPath $installer
-
-          if ($file.Length -lt 1MB) {
-            throw 'Downloaded MT5 installer is unexpectedly small.'
-          }
+          Invoke-WebRequest `
+            -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
+            -OutFile $installer `
+            -TimeoutSec 240
 
           $signature = Get-AuthenticodeSignature -FilePath $installer
 
-          Write-Host "Installer size: $($file.Length)"
-          Write-Host "Signature status: $($signature.Status)"
-
           if ($signature.Status -ne 'Valid') {
-            throw "MT5 installer signature validation failed: $($signature.Status)"
+            throw "Installer signature validation failed: $($signature.Status)"
           }
 
           "MT5_INSTALLER=$installer" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Install MetaTrader 5 and locate executables
+      - name: Install MT5 and locate MetaEditor
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $installPath = 'C:\MT5'
+
           New-Item -ItemType Directory -Path $installPath -Force | Out-Null
 
           $process = Start-Process `
@@ -98,53 +78,114 @@ jobs:
 
           Write-Host "Installer exit code: $($process.ExitCode)"
 
-          $searchRoots = @(
-            'C:\MT5',
-            'C:\Program Files',
-            'C:\Program Files (x86)',
-            $env:LOCALAPPDATA,
-            $env:APPDATA
-          ) | Where-Object {
-            $_ -and (Test-Path -LiteralPath $_ -PathType Container)
-          } | Select-Object -Unique
+          $editor = Join-Path $installPath 'MetaEditor64.exe'
+          $terminal = Join-Path $installPath 'terminal64.exe'
 
-          $editor = $null
-          $terminal = $null
-
-          foreach ($root in $searchRoots) {
-            Write-Host "Searching for MetaEditor under: $root"
-
-            $editor = Get-ChildItem `
-              -Path $root `
-              -Filter 'MetaEditor64.exe' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1
-
-            if ($editor) {
-              break
-            }
+          if (!(Test-Path -LiteralPath $editor -PathType Leaf)) {
+            throw "MetaEditor was not installed at $editor"
           }
 
-          if (!$editor) {
-            throw 'MetaEditor64.exe was not found after installation.'
+          if (!(Test-Path -LiteralPath $terminal -PathType Leaf)) {
+            throw "Terminal was not installed at $terminal"
           }
 
-          foreach ($root in $searchRoots) {
-            $terminal = Get-ChildItem `
-              -Path $root `
-              -Filter 'terminal64.exe' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue |
-              Select-Object -First 1
+          "METAEDITOR_PATH=$editor" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-            if ($terminal) {
-              break
-            }
+          "MT5_ROOT=$installPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Check MQL5 Standard Library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $trade = Join-Path $include 'Trade\Trade.mqh'
+
+          if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
+            throw 'Trade.mqh is missing. A complete MQL5 Standard Library is required. See the workflow log.'
           }
 
-          if (!$terminal) {
-            throw 'terminal64.exe was not found after installation.'
+          Write-Host "Standard Library found: $trade"
+
+      - name: Prepare EA source
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4.mq5'
+          $experts = Join-Path $env:MT5_ROOT 'MQL5\Experts'
+          $destination = Join-Path $experts 'GoldHunterAI_V4.mq5'
+
+          New-Item -ItemType Directory -Path $experts -Force | Out-Null
+          Copy-Item -LiteralPath $source -Destination $destination -Force
+
+          "EA_SOURCE=$destination" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "EA_EXPERTS=$experts" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Compile GoldHunterAI V4
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $out = Join-Path $env:GITHUB_WORKSPACE 'build-output'
+          $source = $env:EA_SOURCE
+          $log = Join-Path $out 'GoldHunterAI_V4_compile.log'
+          $ex5 = Join-Path $env:EA_EXPERTS 'GoldHunterAI_V4.ex5'
+
+          Remove-Item -LiteralPath $ex5 -Force -ErrorAction SilentlyContinue
+
+          $arguments = "/compile:$source /log:$log"
+
+          $compiler = Start-Process `
+            -FilePath $env:METAEDITOR_PATH `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+          Start-Sleep -Seconds 2
+
+          if (!(Test-Path -LiteralPath $log -PathType Leaf)) {
+            throw "Compiler log was not created. Exit code: $($compiler.ExitCode)"
           }
+
+          $logText = Get-Content -LiteralPath $log -Raw
+          Write-Host $logText
+
+          $errors = [regex]::Match($logText, '(?im)\b(\d+)\s+errors?\b')
+
+          if (!$errors.Success) {
+            throw 'Could not verify the compiler error count.'
+          }
+
+          if ([int]$errors.Groups[1].Value -gt 0) {
+            throw "Compilation failed with $($errors.Groups[1].Value) error(s)."
+          }
+
+          if (!(Test-Path -LiteralPath $ex5 -PathType Leaf)) {
+            throw 'The EX5 output file was not generated.'
+          }
+
+          if ((Get-Item -LiteralPath $ex5).Length -eq 0) {
+            throw 'The generated EX5 file is empty.'
+          }
+
+          Copy-Item `
+            -LiteralPath $ex5 `
+            -Destination (Join-Path $out 'GoldHunterAI_V4.ex5') `
+            -Force
+
+          Write-Host 'Compilation output validated successfully.'
+
+      - name: Upload compilation results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GOLD-HUNTER-AI-V4-Build-Results
+          path: build-output/
+          if-no-files-found: warn
+          retention-days: 14
