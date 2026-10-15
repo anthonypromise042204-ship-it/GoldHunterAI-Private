@@ -57,7 +57,7 @@ jobs:
             -TimeoutSec 180
 
           if (-not (Test-Path $installer)) {
-            throw 'MetaTrader installer download failed.'
+            throw 'MetaTrader 5 installer download failed.'
           }
 
           $setup = Start-Process `
@@ -87,7 +87,7 @@ jobs:
           }
 
           if (-not $editor) {
-            throw 'MetaEditor was not installed. Check the installer and network logs.'
+            throw 'MetaEditor was not installed.'
           }
 
           $editorDir = Split-Path $editor -Parent
@@ -100,7 +100,7 @@ jobs:
 
           Write-Host "MetaEditor: $editor"
 
-      - name: Download and install MQL5 standard include library
+      - name: Download MQL5 standard include library
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -122,7 +122,7 @@ jobs:
           }
 
           if (-not (Test-Path $includeSource)) {
-            throw "Expected standard library directory not found: $includeSource"
+            throw "Standard library directory not found: $includeSource"
           }
 
           $required = @(
@@ -136,9 +136,8 @@ jobs:
           )
 
           foreach ($relative in $required) {
-            $file = Join-Path $includeSource $relative
-            if (-not (Test-Path $file)) {
-              throw "Required library header is missing from download: $relative"
+            if (-not (Test-Path (Join-Path $includeSource $relative))) {
+              throw "Downloaded library is missing: $relative"
             }
           }
 
@@ -149,16 +148,62 @@ jobs:
             -Destination $includeTarget `
             -Recurse -Force
 
-          # Verify the destination, not just the downloaded source.
           foreach ($relative in $required) {
-            $file = Join-Path $includeTarget $relative
-            if (-not (Test-Path $file)) {
-              throw "Library copy failed; destination is missing: $relative"
+            if (-not (Test-Path (Join-Path $includeTarget $relative))) {
+              throw "Library copy failed: $relative"
             }
           }
 
-          Write-Host 'MQL5 standard include library installed and verified.'
-          Write-Host "Include directory: $includeTarget"
+          Write-Host 'MQL5 standard library installed.'
+
+      - name: Patch Trade IsStopped compatibility
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $tradeFile = Join-Path `
+            $env:MT5_INSTALL `
+            'MQL5\Include\Trade\Trade.mqh'
+
+          if (-not (Test-Path $tradeFile)) {
+            throw "Trade.mqh not found: $tradeFile"
+          }
+
+          $content = [System.IO.File]::ReadAllText($tradeFile)
+
+          # Change only bare IsStopped() calls to the global ::IsStopped().
+          # Do not change CTrade::IsStopped(string) declarations or calls.
+          $pattern = '(?<![:\w])IsStopped\s*\(\s*\)'
+          $patched = [regex]::Replace(
+            $content,
+            $pattern,
+            '::IsStopped()'
+          )
+
+          if ($patched -eq $content) {
+            if ($content -match '::IsStopped\s*\(\s*\)') {
+              Write-Host 'Trade.mqh already contains the global IsStopped call.'
+            }
+            else {
+              throw 'No bare IsStopped() call was patched. Inspect the library version.'
+            }
+          }
+          else {
+            [System.IO.File]::WriteAllText(
+              $tradeFile,
+              $patched,
+              [System.Text.UTF8Encoding]::new($false)
+            )
+            Write-Host 'Patched bare IsStopped() call to ::IsStopped().'
+          }
+
+          $verified = [System.IO.File]::ReadAllText($tradeFile)
+
+          if ($verified -notmatch '::IsStopped\s*\(\s*\)') {
+            throw 'Patch verification failed: ::IsStopped() was not found.'
+          }
+
+          Write-Host 'Compatibility patch verified.'
 
       - name: Prepare EA and project include files
         shell: powershell
@@ -174,7 +219,6 @@ jobs:
           $eaTarget = Join-Path $expertsDir 'GoldHunterAI_V4.mq5'
           Copy-Item -Path $env:EA_SOURCE -Destination $eaTarget -Force
 
-          # Copy project-specific Include files, if the repository has them.
           $projectInclude = Join-Path $env:GITHUB_WORKSPACE 'Include'
 
           if (Test-Path $projectInclude) {
@@ -184,7 +228,6 @@ jobs:
               -Recurse -Force
           }
 
-          # Copy other repository MQL5 include files, preserving subfolders.
           $projectFiles = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
             -File `
@@ -230,7 +273,7 @@ jobs:
             throw 'Trade.mqh is missing immediately before compilation.'
           }
 
-          $args = @(
+          $arguments = @(
             '/portable'
             "/compile:$($env:EA_COMPILE_PATH)"
             "/log:$log"
@@ -238,7 +281,7 @@ jobs:
 
           $process = Start-Process `
             -FilePath $env:METAEDITOR `
-            -ArgumentList $args `
+            -ArgumentList $arguments `
             -WorkingDirectory $env:MT5_INSTALL `
             -Wait `
             -PassThru
@@ -253,7 +296,7 @@ jobs:
           Get-Content $log
 
           if ($content -match '(?i)\b[1-9]\d*\s+errors?\b') {
-            throw 'Compilation reported errors. See compile.log.'
+            throw 'Compilation reported errors. Review compile.log.'
           }
 
           if (-not (Test-Path $output)) {
@@ -261,7 +304,7 @@ jobs:
           }
 
           if ($content -notmatch '(?i)0\s+errors?') {
-            throw 'The log does not confirm zero errors; the build is not verified.'
+            throw 'Compile log does not confirm zero errors.'
           }
 
           Write-Host 'Build verified: zero errors and EX5 output exists.'
