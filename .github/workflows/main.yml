@@ -309,12 +309,33 @@ jobs:
 
           Write-Host 'Build verified: zero errors and EX5 output exists.'
 
+      - name: Stage and upload compile results
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $artifactDir = Join-Path $env:GITHUB_WORKSPACE 'build-artifacts'
+          New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
+
+          $log = Join-Path $env:GITHUB_WORKSPACE 'compile.log'
+          if (Test-Path $log) {
+            Copy-Item $log (Join-Path $artifactDir 'compile.log') -Force
+          }
+
+          $ex5 = 'C:\MT5\MQL5\Experts\GoldHunterAI_V4.ex5'
+          if (Test-Path $ex5) {
+            Copy-Item $ex5 (Join-Path $artifactDir 'GoldHunterAI_V4.ex5') -Force
+            Write-Host 'Compiled EX5 copied to build-artifacts.'
+          }
+          else {
+            Write-Warning 'EX5 file was not found; uploading available logs only.'
+          }
+
       - name: Upload compile results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GoldHunterAI-V4-compile-results
-          path: |
-            compile.log
-            C:/MT5/MQL5/Experts/GoldHunterAI_V4.ex5
+          path: build-artifacts/*
           if-no-files-found: warn
