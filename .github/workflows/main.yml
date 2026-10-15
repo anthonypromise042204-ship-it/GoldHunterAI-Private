@@ -100,43 +100,83 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
-          $trade = Join-Path $include 'Trade\Trade.mqh'
-          $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
+          $dataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+          $dataInclude = $null
+
+          $dataTrade = Get-ChildItem `
+            -Path $dataRoot `
+            -Filter 'Trade.mqh' `
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object {
+              $_.Directory.Name -eq 'Trade' -and
+              $_.Directory.Parent.Name -eq 'Include'
+            } |
+            Select-Object -First 1
+
+          if ($dataTrade) {
+            $dataInclude = $dataTrade.Directory.Parent.FullName
+          }
+          else {
+            $dataFolders = Get-ChildItem `
+              -Path $dataRoot `
+              -Directory `
+              -ErrorAction SilentlyContinue
+
+            $dataFolder = $dataFolders |
+              Where-Object { $_.Name -match '^[A-F0-9]{32}$' } |
+              Select-Object -First 1
+
+            if (!$dataFolder) {
+              throw 'MetaTrader terminal data folder not found.'
+            }
+
+            $dataInclude = Join-Path $dataFolder.FullName 'MQL5\Include'
+          }
+
+          $trade = Join-Path $dataInclude 'Trade\Trade.mqh'
 
           if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
-            Write-Host 'Trade.mqh is missing. Retrieving MQL5 library files.'
+            $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
 
             git clone --depth 1 https://github.com/vmlellis/mt5-docker.git $mirror
 
             if ($LASTEXITCODE -ne 0) {
-              throw 'Unable to retrieve the library repository.'
+              throw 'Failed to retrieve the library mirror.'
             }
 
-            $mirrorInclude = Join-Path $mirror 'MetaTrader 5\MQL5\Include'
-            $mirrorTrade = Join-Path $mirrorInclude 'Trade\Trade.mqh'
+            $mirrorTrade = Get-ChildItem `
+              -Path $mirror `
+              -Filter 'Trade.mqh' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
 
-            if (!(Test-Path -LiteralPath $mirrorTrade -PathType Leaf)) {
-              Get-ChildItem -Path $mirror -Filter 'Trade.mqh' -File -Recurse -ErrorAction SilentlyContinue |
-                Select-Object -First 10 -ExpandProperty FullName
-
-              throw 'Trade.mqh was not found in the downloaded repository.'
+            if (!$mirrorTrade) {
+              throw 'Trade.mqh not found in the downloaded mirror.'
             }
 
-            New-Item -ItemType Directory -Path $include -Force | Out-Null
+            $mirrorInclude = $mirrorTrade.Directory.Parent.FullName
+
+            New-Item -ItemType Directory -Path $dataInclude -Force | Out-Null
 
             Copy-Item `
               -Path (Join-Path $mirrorInclude '*') `
-              -Destination $include `
+              -Destination $dataInclude `
               -Recurse `
               -Force
           }
 
           if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
-            throw 'Trade.mqh remains missing after library preparation.'
+            throw "Trade.mqh is still missing from $trade"
           }
 
-          Write-Host "Standard Library ready: $trade"
+          Write-Host "Standard Library installed at: $trade"
+
+          "MQL5_DATA_INCLUDE=$dataInclude" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Prepare EA source
         shell: pwsh
