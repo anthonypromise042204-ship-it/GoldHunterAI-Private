@@ -217,27 +217,114 @@ jobs:
             }
 
             @(
-              'ERROR: Trade.mqh was not found.'
+      # 4. INSTALL MT5 AND INITIALIZE THE TERMINAL
+      - name: Install and initialize MetaTrader 5
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $installPath = 'C:\MT5'
+          $report = Join-Path $env:GITHUB_WORKSPACE 'build-output\environment-diagnostics.txt'
+
+          New-Item -ItemType Directory -Force -Path $installPath | Out-Null
+
+          $process = Start-Process `
+            -FilePath $env:MT5_INSTALLER `
+            -ArgumentList @('/auto', "/path:$installPath") `
+            -PassThru `
+            -Wait
+
+          Write-Host "Installer exit code: $($process.ExitCode)"
+
+          $terminal = Join-Path $installPath 'terminal64.exe'
+          $editor = Join-Path $installPath 'MetaEditor64.exe'
+
+          if (!(Test-Path $editor -PathType Leaf)) {
+            throw "MetaEditor was not found: $editor"
+          }
+
+          if (!(Test-Path $terminal -PathType Leaf)) {
+            throw "The actual terminal executable is missing: $terminal"
+          }
+
+          Write-Host 'Starting terminal briefly to initialize its environment.'
+
+          $terminalProcess = Start-Process `
+            -FilePath $terminal `
+            -ArgumentList '/portable' `
+            -PassThru
+
+          Start-Sleep -Seconds 15
+
+          if (!$terminalProcess.HasExited) {
+            Stop-Process -Id $terminalProcess.Id -Force -ErrorAction SilentlyContinue
+          }
+
+          "METAEDITOR_PATH=$editor" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "MT5_ROOT=$installPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          @(
+            "Installer exit code: $($process.ExitCode)"
+            "Terminal executable: $terminal"
+            "MetaEditor executable: $editor"
+          ) | Add-Content $report
+
+      # 5. LOCATE THE STANDARD LIBRARY
+      - name: Locate MQL5 Standard Library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $report = Join-Path $env:GITHUB_WORKSPACE 'build-output\environment-diagnostics.txt'
+
+          $roots = @(
+            'C:\MT5',
+            "$env:APPDATA\MetaQuotes\Terminal",
+            "$env:LOCALAPPDATA\Programs",
+            'C:\Program Files'
+          ) | Where-Object { $_ -and (Test-Path $_) }
+
+          $tradeFile = $null
+
+          foreach ($root in $roots) {
+            Write-Host "Searching: $root"
+
+            $tradeFile = Get-ChildItem `
+              -Path $root `
+              -Filter 'Trade.mqh' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if ($tradeFile) {
+              break
+            }
+          }
+
+          if (!$tradeFile) {
+            @(
+              'Trade.mqh was not found after terminal initialization.'
               "MetaEditor: $env:METAEDITOR_PATH"
               "MT5 root: $env:MT5_ROOT"
-              "Search roots: $($searchRoots -join '; ')"
-              'The MQL5 Standard Library may be missing.'
+              "Search roots: $($roots -join '; ')"
             ) | Add-Content $report
 
-            throw 'Trade.mqh is missing. Compilation cannot proceed until the standard library is available.'
+            throw 'The installation does not contain Trade.mqh. A complete MQL5 Standard Library installation is required.'
           }
 
           $includeDir = $tradeFile.Directory.FullName
 
           Write-Host "Found Trade.mqh: $($tradeFile.FullName)"
-          Write-Host "Include directory: $includeDir"
 
           "MQL5_INCLUDE=$includeDir" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           "Trade.mqh found: $($tradeFile.FullName)" |
             Add-Content $report
-
       # 6. PREPARE THE EA SOURCE
       - name: Prepare V4 source for compilation
         shell: pwsh
