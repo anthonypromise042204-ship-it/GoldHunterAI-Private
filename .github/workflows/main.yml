@@ -54,45 +54,98 @@ jobs:
 
           Write-Host "EA source: $($ea.FullName)"
 
-      - name: Install MetaTrader 5
+      - name: Install or Locate MetaTrader 5
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
-          $url = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          $roots = @(
+            'C:\MT5',
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5'
+          )
 
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          # Reuse an existing MetaEditor if available.
+          $editor = $null
 
-          if (-not (Test-Path $installer)) {
-            throw 'MetaTrader installer download failed.'
+          foreach ($root in $roots) {
+            foreach ($name in @('metaeditor64.exe', 'metaeditor.exe')) {
+              $candidate = Join-Path $root $name
+
+              if (Test-Path -LiteralPath $candidate) {
+                $editor = $candidate
+                break
+              }
+            }
+
+            if ($editor) { break }
           }
 
-          $process = Start-Process `
-            -FilePath $installer `
-            -ArgumentList '/auto', "/path:$env:MT5_ROOT" `
-            -Wait `
-            -PassThru
+          if (-not $editor) {
+            $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+            $installerLog = Join-Path $env:RUNNER_TEMP 'mt5-installer.log'
 
-          if ($process.ExitCode -ne 0) {
-            throw "MetaTrader installer failed with exit code $($process.ExitCode)."
-          }
+            $url = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
 
-          $editor = Join-Path $env:MT5_ROOT 'metaeditor64.exe'
+            Write-Host 'Downloading the official MetaTrader installer...'
+            Invoke-WebRequest -Uri $url -OutFile $installer
 
-          if (-not (Test-Path $editor)) {
-            $editor = Join-Path $env:MT5_ROOT 'metaeditor.exe'
-          }
+            if (-not (Test-Path -LiteralPath $installer)) {
+              throw 'Installer download failed.'
+            }
 
-          if (-not (Test-Path $editor)) {
-            throw "MetaEditor not found under $env:MT5_ROOT."
+            # Run the documented unattended installation command.
+            $arguments = @(
+              '/auto'
+              '/path:C:\MT5'
+            )
+
+            $process = Start-Process `
+              -FilePath $installer `
+              -ArgumentList $arguments `
+              -Wait `
+              -PassThru `
+              -RedirectStandardOutput $installerLog `
+              -RedirectStandardError "$installerLog.err"
+
+            Write-Host "Installer exit code: $($process.ExitCode)"
+
+            if (Test-Path $installerLog) {
+              Get-Content $installerLog
+            }
+
+            if (Test-Path "$installerLog.err") {
+              Get-Content "$installerLog.err"
+            }
+
+            # Do not trust the exit code alone; verify actual files.
+            foreach ($root in $roots) {
+              foreach ($name in @('metaeditor64.exe', 'metaeditor.exe')) {
+                $candidate = Join-Path $root $name
+
+                if (Test-Path -LiteralPath $candidate) {
+                  $editor = $candidate
+                  break
+                }
+              }
+
+              if ($editor) { break }
+            }
+
+            if (-not $editor) {
+              throw "MetaEditor was not installed. Installer exit code: $($process.ExitCode). Check the installer output above."
+            }
           }
 
           "METAEDITOR_PATH=$editor" |
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "MetaEditor: $editor"
+          $installRoot = Split-Path $editor -Parent
+          "MT5_ROOT=$installRoot" |
+            Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
+          Write-Host "MetaEditor found: $editor"
+          Write-Host "Installation folder: $installRoot"
       - name: Prepare MQL5 Standard Library
         shell: pwsh
         run: |
