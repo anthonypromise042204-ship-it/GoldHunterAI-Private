@@ -101,81 +101,37 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $dataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-          $dataInclude = $null
+          $source = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $trade = Join-Path $source 'Trade\Trade.mqh'
 
-          $dataTrade = Get-ChildItem `
-            -Path $dataRoot `
-            -Filter 'Trade.mqh' `
-            -File `
-            -Recurse `
-            -ErrorAction SilentlyContinue |
-            Where-Object {
-              $_.Directory.Name -eq 'Trade' -and
-              $_.Directory.Parent.Name -eq 'Include'
-            } |
-            Select-Object -First 1
-
-          if ($dataTrade) {
-            $dataInclude = $dataTrade.Directory.Parent.FullName
-          }
-          else {
-            $dataFolders = Get-ChildItem `
-              -Path $dataRoot `
-              -Directory `
-              -ErrorAction SilentlyContinue
-
-            $dataFolder = $dataFolders |
-              Where-Object { $_.Name -match '^[A-F0-9]{32}$' } |
-              Select-Object -First 1
-
-            if (!$dataFolder) {
-              throw 'MetaTrader terminal data folder not found.'
-            }
-
-            $dataInclude = Join-Path $dataFolder.FullName 'MQL5\Include'
-          }
-
-          $trade = Join-Path $dataInclude 'Trade\Trade.mqh'
-
+          # Prefer a complete library already installed by MetaTrader.
           if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
-            $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
-
-            git clone --depth 1 https://github.com/vmlellis/mt5-docker.git $mirror
-
-            if ($LASTEXITCODE -ne 0) {
-              throw 'Failed to retrieve the library mirror.'
-            }
-
-            $mirrorTrade = Get-ChildItem `
-              -Path $mirror `
+            $found = Get-ChildItem `
+              -Path $dataRoot `
               -Filter 'Trade.mqh' `
               -File `
               -Recurse `
               -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.Directory.Name -eq 'Trade' -and
+                $_.Directory.Parent.Name -eq 'Include'
+              } |
               Select-Object -First 1
 
-            if (!$mirrorTrade) {
-              throw 'Trade.mqh not found in the downloaded mirror.'
+            if ($found) {
+              $source = $found.Directory.Parent.FullName
+              $trade = $found.FullName
             }
-
-            $mirrorInclude = $mirrorTrade.Directory.Parent.FullName
-
-            New-Item -ItemType Directory -Path $dataInclude -Force | Out-Null
-
-            Copy-Item `
-              -Path (Join-Path $mirrorInclude '*') `
-              -Destination $dataInclude `
-              -Recurse `
-              -Force
           }
 
           if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
-            throw "Trade.mqh is still missing from $trade"
+            throw 'No installed Standard Library found. Install/update MetaTrader 5 with its complete MQL5 Include folder before compiling.'
           }
 
-          Write-Host "Standard Library installed at: $trade"
+          Write-Host "Using library: $source"
+          Write-Host "Trade header: $trade"
 
-          "MQL5_DATA_INCLUDE=$dataInclude" |
+          "MQL5_INCLUDE=$source" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Prepare EA source
