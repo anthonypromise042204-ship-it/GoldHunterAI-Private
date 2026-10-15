@@ -189,7 +189,7 @@ jobs:
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # --------------------------------------------------
-      # 5. LOCATE AND VERIFY THE STANDARD LIBRARY
+      # 5. LOCATE MQL5 STANDARD LIBRARY
       # --------------------------------------------------
       - name: Locate and prepare MQL5 Standard Library
         shell: pwsh
@@ -199,18 +199,22 @@ jobs:
           $report = Join-Path $env:GITHUB_WORKSPACE 'build-output\environment-diagnostics.txt'
 
           $searchRoots = @(
-            $env:MT5_ROOT,
             'C:\MT5',
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
             "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\Programs"
-          ) | Where-Object { $_ -and (Test-Path $_) }
+            "$env:LOCALAPPDATA\Programs",
+            "$env:PROGRAMFILES"
+          ) | Where-Object {
+            $_ -and (Test-Path $_)
+          } | Select-Object -Unique
+
+          Write-Host 'Searching for Trade.mqh...'
 
           $tradeFile = $null
 
           foreach ($root in $searchRoots) {
-            Write-Host "Searching for Trade.mqh under: $root"
+            Write-Host "Searching: $root"
 
             $tradeFile = Get-ChildItem `
               -Path $root `
@@ -225,29 +229,59 @@ jobs:
             }
           }
 
-          if (!$tradeFile) {
+          if ($tradeFile) {
+            $includeDir = $tradeFile.Directory.FullName
+
+            Write-Host "FOUND Trade.mqh: $($tradeFile.FullName)"
+            Write-Host "Include directory: $includeDir"
+
+            "MQL5_INCLUDE=$includeDir" |
+              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
             @(
-              'Standard library: Trade.mqh NOT FOUND'
+              "Trade.mqh found: $($tradeFile.FullName)"
+              "MQL5 include directory: $includeDir"
+            ) | Add-Content $report
+          }
+          else {
+            Write-Warning 'Trade.mqh was not found. Collecting installation diagnostics.'
+
+            foreach ($root in $searchRoots) {
+              Write-Host "`nContents of $root"
+
+              Get-ChildItem `
+                -Path $root `
+                -Directory `
+                -ErrorAction SilentlyContinue |
+                Select-Object -First 30 -ExpandProperty FullName |
+                ForEach-Object { Write-Host $_ }
+            }
+
+            $editorPath = $env:METAEDITOR_PATH
+
+            if ($editorPath) {
+              Write-Host "`nMetaEditor path: $editorPath"
+              Write-Host 'Checking its nearby MQL5 directories...'
+
+              $editorDir = Split-Path $editorPath -Parent
+
+              Get-ChildItem `
+                -Path $editorDir `
+                -Directory `
+                -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName |
+                ForEach-Object { Write-Host $_ }
+            }
+
+            @(
+              'ERROR: Trade.mqh was not found.'
+              "MetaEditor path: $editorPath"
               "Search roots: $($searchRoots -join '; ')"
+              'The MQL5 Standard Library may not have been installed.'
             ) | Add-Content $report
 
-            throw 'Trade.mqh was not found. The MQL5 Standard Library is missing or the installation is incomplete.'
+            throw 'Trade.mqh is missing. Review the installation diagnostics before attempting compilation.'
           }
-
-          $includeDir = $tradeFile.Directory.FullName
-          $mql5Dir = Split-Path (Split-Path $includeDir -Parent) -Parent
-
-          Write-Host "Trade.mqh: $($tradeFile.FullName)"
-          Write-Host "Include directory: $includeDir"
-
-          @(
-            "Trade.mqh: $($tradeFile.FullName)"
-            "Include directory: $includeDir"
-          ) | Add-Content $report
-
-          "MQL5_INCLUDE=$includeDir" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
       # --------------------------------------------------
       # 6. PREPARE THE EXPERT ADVISOR SOURCE
       # --------------------------------------------------
