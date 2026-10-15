@@ -18,15 +18,11 @@ jobs:
     timeout-minutes: 30
 
     steps:
-      # --------------------------------------------------
       # 1. CHECK OUT SOURCE CODE
-      # --------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # --------------------------------------------------
-      # 2. CREATE OUTPUT DIRECTORY AND VERIFY SOURCE
-      # --------------------------------------------------
+      # 2. PREPARE OUTPUT AND VERIFY SOURCE
       - name: Prepare build output
         shell: pwsh
         run: |
@@ -57,9 +53,7 @@ jobs:
           Write-Host "Source size: $($file.Length) bytes"
           Write-Host "SHA256: $hash"
 
-      # --------------------------------------------------
-      # 3. DOWNLOAD AND VERIFY THE OFFICIAL MT5 INSTALLER
-      # --------------------------------------------------
+      # 3. DOWNLOAD OFFICIAL MT5 INSTALLER
       - name: Download MetaTrader 5 installer
         shell: pwsh
         run: |
@@ -83,7 +77,7 @@ jobs:
           $signature = Get-AuthenticodeSignature $installer
 
           Write-Host "Installer size: $($file.Length) bytes"
-          Write-Host "Installer signature status: $($signature.Status)"
+          Write-Host "Signature status: $($signature.Status)"
 
           if ($signature.Status -ne 'Valid') {
             throw "Installer signature is not valid: $($signature.Status)"
@@ -92,9 +86,7 @@ jobs:
           "MT5_INSTALLER=$installer" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # --------------------------------------------------
       # 4. INSTALL MT5 AND LOCATE METAEDITOR
-      # --------------------------------------------------
       - name: Install MetaTrader 5 and locate MetaEditor
         shell: pwsh
         run: |
@@ -105,8 +97,7 @@ jobs:
 
           New-Item -ItemType Directory -Force -Path $installPath | Out-Null
 
-          Write-Host "Starting installer: $env:MT5_INSTALLER"
-          Write-Host "Installation target: $installPath"
+          Write-Host 'Starting MetaTrader 5 installation...'
 
           $process = Start-Process `
             -FilePath $env:MT5_INSTALLER `
@@ -124,74 +115,62 @@ jobs:
             "$env:LOCALAPPDATA\Programs"
           ) | Where-Object { $_ -and (Test-Path $_) }
 
-          $metaEditor = $null
+          $editor = $null
 
-          for ($attempt = 1; $attempt -le 24; $attempt++) {
-            foreach ($root in $searchRoots) {
-              $metaEditor = Get-ChildItem `
+          foreach ($root in $searchRoots) {
+            $editor = Get-ChildItem `
+              -Path $root `
+              -Filter 'MetaEditor64.exe' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+
+            if (!$editor) {
+              $editor = Get-ChildItem `
                 -Path $root `
-                -Filter 'MetaEditor64.exe' `
+                -Filter 'metaeditor.exe' `
                 -File `
                 -Recurse `
                 -ErrorAction SilentlyContinue |
                 Select-Object -First 1
-
-              if (!$metaEditor) {
-                $metaEditor = Get-ChildItem `
-                  -Path $root `
-                  -Filter 'metaeditor.exe' `
-                  -File `
-                  -Recurse `
-                  -ErrorAction SilentlyContinue |
-                  Select-Object -First 1
-              }
-
-              if ($metaEditor) {
-                break
-              }
             }
 
-            if ($metaEditor) {
+            if ($editor) {
               break
             }
-
-            Write-Host "MetaEditor not found yet; attempt $attempt of 24."
-            Start-Sleep -Seconds 5
           }
 
-          if (!$metaEditor) {
+          if (!$editor) {
             @(
               "Installer exit code: $($process.ExitCode)"
-              "Installer path: $env:MT5_INSTALLER"
-              "Installation path: $installPath"
               'MetaEditor: NOT FOUND'
+              "Installation target: $installPath"
             ) | Add-Content $report
 
-            throw 'MetaEditor was not installed or could not be located. Review the diagnostic artifact.'
+            throw 'MetaEditor was not found after installation.'
           }
 
-          $metaEditorPath = $metaEditor.FullName
-          $mt5Root = Split-Path $metaEditorPath -Parent
+          $editorPath = $editor.FullName
+          $editorDir = Split-Path $editorPath -Parent
 
-          Write-Host "MetaEditor: $metaEditorPath"
-          Write-Host "MT5 installation directory: $mt5Root"
+          Write-Host "MetaEditor: $editorPath"
+          Write-Host "MetaEditor directory: $editorDir"
 
           @(
             "Installer exit code: $($process.ExitCode)"
-            "MetaEditor: $metaEditorPath"
-            "MT5 installation directory: $mt5Root"
+            "MetaEditor: $editorPath"
+            "MetaEditor directory: $editorDir"
           ) | Add-Content $report
 
-          "METAEDITOR_PATH=$metaEditorPath" |
+          "METAEDITOR_PATH=$editorPath" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          "MT5_ROOT=$mt5Root" |
+          "MT5_ROOT=$editorDir" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # --------------------------------------------------
-      # 5. LOCATE MQL5 STANDARD LIBRARY
-      # --------------------------------------------------
-      - name: Locate and prepare MQL5 Standard Library
+      # 5. LOCATE THE MQL5 STANDARD LIBRARY
+      - name: Locate MQL5 Standard Library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -203,18 +182,14 @@ jobs:
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
             "$env:APPDATA\MetaQuotes\Terminal",
-            "$env:LOCALAPPDATA\Programs",
-            "$env:PROGRAMFILES"
-          ) | Where-Object {
-            $_ -and (Test-Path $_)
-          } | Select-Object -Unique
-
-          Write-Host 'Searching for Trade.mqh...'
+            "$env:LOCALAPPDATA\Programs"
+          ) | Where-Object { $_ -and (Test-Path $_) } |
+            Select-Object -Unique
 
           $tradeFile = $null
 
           foreach ($root in $searchRoots) {
-            Write-Host "Searching: $root"
+            Write-Host "Searching for Trade.mqh under: $root"
 
             $tradeFile = Get-ChildItem `
               -Path $root `
@@ -229,62 +204,41 @@ jobs:
             }
           }
 
-          if ($tradeFile) {
-            $includeDir = $tradeFile.Directory.FullName
+          if (!$tradeFile) {
+            Write-Warning 'Trade.mqh was not found.'
 
-            Write-Host "FOUND Trade.mqh: $($tradeFile.FullName)"
-            Write-Host "Include directory: $includeDir"
+            $terminalData = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
 
-            "MQL5_INCLUDE=$includeDir" |
-              Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+            if (Test-Path $terminalData) {
+              Write-Host 'Terminal data directories:'
 
-            @(
-              "Trade.mqh found: $($tradeFile.FullName)"
-              "MQL5 include directory: $includeDir"
-            ) | Add-Content $report
-          }
-          else {
-            Write-Warning 'Trade.mqh was not found. Collecting installation diagnostics.'
-
-            foreach ($root in $searchRoots) {
-              Write-Host "`nContents of $root"
-
-              Get-ChildItem `
-                -Path $root `
-                -Directory `
-                -ErrorAction SilentlyContinue |
-                Select-Object -First 30 -ExpandProperty FullName |
-                ForEach-Object { Write-Host $_ }
-            }
-
-            $editorPath = $env:METAEDITOR_PATH
-
-            if ($editorPath) {
-              Write-Host "`nMetaEditor path: $editorPath"
-              Write-Host 'Checking its nearby MQL5 directories...'
-
-              $editorDir = Split-Path $editorPath -Parent
-
-              Get-ChildItem `
-                -Path $editorDir `
-                -Directory `
-                -ErrorAction SilentlyContinue |
-                Select-Object -ExpandProperty FullName |
-                ForEach-Object { Write-Host $_ }
+              Get-ChildItem $terminalData -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { Write-Host $_.FullName }
             }
 
             @(
               'ERROR: Trade.mqh was not found.'
-              "MetaEditor path: $editorPath"
+              "MetaEditor: $env:METAEDITOR_PATH"
+              "MT5 root: $env:MT5_ROOT"
               "Search roots: $($searchRoots -join '; ')"
-              'The MQL5 Standard Library may not have been installed.'
+              'The MQL5 Standard Library may be missing.'
             ) | Add-Content $report
 
-            throw 'Trade.mqh is missing. Review the installation diagnostics before attempting compilation.'
+            throw 'Trade.mqh is missing. Compilation cannot proceed until the standard library is available.'
           }
-      # --------------------------------------------------
-      # 6. PREPARE THE EXPERT ADVISOR SOURCE
-      # --------------------------------------------------
+
+          $includeDir = $tradeFile.Directory.FullName
+
+          Write-Host "Found Trade.mqh: $($tradeFile.FullName)"
+          Write-Host "Include directory: $includeDir"
+
+          "MQL5_INCLUDE=$includeDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "Trade.mqh found: $($tradeFile.FullName)" |
+            Add-Content $report
+
+      # 6. PREPARE THE EA SOURCE
       - name: Prepare V4 source for compilation
         shell: pwsh
         run: |
@@ -299,12 +253,7 @@ jobs:
           }
 
           New-Item -ItemType Directory -Force -Path $experts | Out-Null
-
           Copy-Item -Path $source -Destination $destination -Force
-
-          if (!(Test-Path $destination -PathType Leaf)) {
-            throw "Failed to copy EA source to: $destination"
-          }
 
           Write-Host "Source copied to: $destination"
 
@@ -314,9 +263,7 @@ jobs:
           "EA_EXPERTS=$experts" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      # --------------------------------------------------
       # 7. COMPILE GOLD HUNTER AI V4
-      # --------------------------------------------------
       - name: Compile GoldHunterAI V4
         shell: pwsh
         run: |
@@ -328,25 +275,24 @@ jobs:
           $ex5 = Join-Path $env:EA_EXPERTS 'GoldHunterAI_V4.ex5'
 
           if (!(Test-Path $env:METAEDITOR_PATH -PathType Leaf)) {
-            throw "MetaEditor executable not found: $env:METAEDITOR_PATH"
+            throw "MetaEditor not found: $env:METAEDITOR_PATH"
           }
 
           if (!(Test-Path $expertSource -PathType Leaf)) {
-            throw "Expert Advisor source not found: $expertSource"
+            throw "EA source not found: $expertSource"
           }
 
           Remove-Item $ex5 -Force -ErrorAction SilentlyContinue
           Remove-Item $compileLog -Force -ErrorAction SilentlyContinue
 
-          Write-Host "Compiler: $env:METAEDITOR_PATH"
-          Write-Host "Source: $expertSource"
-          Write-Host "Include directory: $env:MQL5_INCLUDE"
-          Write-Host "Compile log: $compileLog"
-
           $arguments = @(
             "/compile:$expertSource"
             "/log:$compileLog"
           )
+
+          Write-Host "Compiler: $env:METAEDITOR_PATH"
+          Write-Host "Source: $expertSource"
+          Write-Host "Compile log: $compileLog"
 
           $compiler = Start-Process `
             -FilePath $env:METAEDITOR_PATH `
@@ -354,19 +300,24 @@ jobs:
             -Wait `
             -PassThru
 
-          Write-Host "MetaEditor process exit code: $($compiler.ExitCode)"
+          Write-Host "MetaEditor exit code: $($compiler.ExitCode)"
 
           Start-Sleep -Seconds 2
 
           if (Test-Path $compileLog -PathType Leaf) {
             Get-Content $compileLog | ForEach-Object { Write-Host $_ }
+          } else {
+            throw 'MetaEditor did not create the compilation log.'
           }
-          else {
-            Write-Warning 'MetaEditor did not create the expected compile log.'
+
+          $logText = Get-Content $compileLog -Raw
+
+          if ($logText -match '(?i)\b[1-9]\d*\s+errors?\b') {
+            throw 'MetaEditor reported compilation errors.'
           }
 
           if (!(Test-Path $ex5 -PathType Leaf)) {
-            throw 'Compilation did not produce GoldHunterAI_V4.ex5. Inspect the compiler log artifact.'
+            throw 'Compilation did not produce GoldHunterAI_V4.ex5.'
           }
 
           $compiled = Get-Item $ex5
@@ -380,26 +331,15 @@ jobs:
             -Destination (Join-Path $out 'GoldHunterAI_V4.ex5') `
             -Force
 
-          Write-Host "Compiled EX5 size: $($compiled.Length) bytes"
-
           @(
             "Compiled file: $ex5"
             "Compiled size: $($compiled.Length) bytes"
-            "MetaEditor process exit code: $($compiler.ExitCode)"
+            "MetaEditor exit code: $($compiler.ExitCode)"
           ) | Add-Content (Join-Path $out 'environment-diagnostics.txt')
 
-          # Fail the workflow if the compiler log reports errors.
-          if (Test-Path $compileLog -PathType Leaf) {
-            $logText = Get-Content $compileLog -Raw
+          Write-Host "Build output: $(Join-Path $out 'GoldHunterAI_V4.ex5')"
 
-            if ($logText -match '(?i)\b[1-9]\d*\s+errors?\b') {
-              throw 'MetaEditor reported compilation errors. Review GoldHunterAI_V4_compile.log.'
-            }
-          }
-
-      # --------------------------------------------------
-      # 8. UPLOAD BUILD OUTPUT EVEN IF A STEP FAILS
-      # --------------------------------------------------
+      # 8. UPLOAD RESULTS EVEN IF A STEP FAILS
       - name: Upload diagnostic report and build results
         if: always()
         uses: actions/upload-artifact@v4
