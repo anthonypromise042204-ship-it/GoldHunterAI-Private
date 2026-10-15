@@ -251,7 +251,7 @@ jobs:
             Out-File $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "EA prepared: $eaTarget"
-
+          
       - name: Compile EA
         shell: powershell
         run: |
@@ -269,8 +269,8 @@ jobs:
             throw 'MetaEditor executable is missing.'
           }
 
-          if (-not (Test-Path (Join-Path $env:MT5_INSTALL 'MQL5\Include\Trade\Trade.mqh'))) {
-            throw 'Trade.mqh is missing immediately before compilation.'
+          if (-not (Test-Path $env:EA_COMPILE_PATH)) {
+            throw 'EA source file is missing.'
           }
 
           $arguments = @(
@@ -296,18 +296,28 @@ jobs:
           Get-Content $log
 
           if ($content -match '(?i)\b[1-9]\d*\s+errors?\b') {
-            throw 'Compilation reported errors. Review compile.log.'
+            throw 'Compilation reported one or more errors.'
+          }
+
+          if ($content -notmatch '(?i)\b0\s+errors?\b') {
+            throw 'Compiler log does not confirm zero errors.'
           }
 
           if (-not (Test-Path $output)) {
-            throw 'Compiled EX5 output was not created.'
+            throw 'Fresh EX5 output was not created.'
           }
 
-          if ($content -notmatch '(?i)0\s+errors?') {
-            throw 'Compile log does not confirm zero errors.'
+          if ((Get-Item $output).Length -le 0) {
+            throw 'Generated EX5 file is empty.'
           }
 
-          Write-Host 'Build verified: zero errors and EX5 output exists.'
+          if ($process.ExitCode -ne 0) {
+            Write-Warning 'MetaEditor returned a nonzero exit code despite the zero-error log and EX5 output.'
+            Write-Warning 'Build verification requires investigation of this MetaEditor exit code.'
+            throw "MetaEditor exit code was $($process.ExitCode)."
+          }
+
+          Write-Host 'BUILD VERIFIED: MetaEditor exited successfully, zero errors, and a fresh EX5 exists.'
 
       - name: Stage and upload compile results
         if: always()
