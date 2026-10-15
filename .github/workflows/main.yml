@@ -85,7 +85,6 @@ jobs:
 
           Write-Host "Installer downloaded: $installer"
           Write-Host "Installer size: $($file.Length) bytes"
-
       - name: Inspect installer command-line behavior
         shell: pwsh
         run: |
@@ -105,7 +104,6 @@ jobs:
             Format-List Status, StatusMessage
 
           Write-Host 'Installer inspection complete.'
-
       - name: Check existing MetaEditor installations
         shell: pwsh
         run: |
