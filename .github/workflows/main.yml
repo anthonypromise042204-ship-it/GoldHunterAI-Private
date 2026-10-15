@@ -95,19 +95,48 @@ jobs:
           "MT5_ROOT=$installPath" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Check MQL5 Standard Library
+      - name: Prepare MQL5 Standard Library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
           $include = Join-Path $env:MT5_ROOT 'MQL5\Include'
           $trade = Join-Path $include 'Trade\Trade.mqh'
+          $mirror = Join-Path $env:RUNNER_TEMP 'mt5-library-mirror'
 
           if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
-            throw 'Trade.mqh is missing. A complete MQL5 Standard Library is required. See the workflow log.'
+            Write-Host 'Trade.mqh is missing. Retrieving MQL5 library files.'
+
+            git clone --depth 1 https://github.com/vmlellis/mt5-docker.git $mirror
+
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Unable to retrieve the library repository.'
+            }
+
+            $mirrorInclude = Join-Path $mirror 'MetaTrader 5\MQL5\Include'
+            $mirrorTrade = Join-Path $mirrorInclude 'Trade\Trade.mqh'
+
+            if (!(Test-Path -LiteralPath $mirrorTrade -PathType Leaf)) {
+              Get-ChildItem -Path $mirror -Filter 'Trade.mqh' -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 10 -ExpandProperty FullName
+
+              throw 'Trade.mqh was not found in the downloaded repository.'
+            }
+
+            New-Item -ItemType Directory -Path $include -Force | Out-Null
+
+            Copy-Item `
+              -Path (Join-Path $mirrorInclude '*') `
+              -Destination $include `
+              -Recurse `
+              -Force
           }
 
-          Write-Host "Standard Library found: $trade"
+          if (!(Test-Path -LiteralPath $trade -PathType Leaf)) {
+            throw 'Trade.mqh remains missing after library preparation.'
+          }
+
+          Write-Host "Standard Library ready: $trade"
 
       - name: Prepare EA source
         shell: pwsh
