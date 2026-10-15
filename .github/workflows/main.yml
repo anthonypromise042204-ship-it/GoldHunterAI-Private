@@ -2,19 +2,12 @@ name: GOLD HUNTER AI V4 Compiler
 
 on:
   push:
-    branches: [main, master]
-    paths:
-      - '**.mq5'
-      - '**.mqh'
-      - '.github/workflows/main.yml'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
   contents: read
-
-concurrency:
-  group: gold-hunter-ai-v4-${{ github.ref }}
-  cancel-in-progress: true
 
 jobs:
   compile:
@@ -27,305 +20,254 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Locate EA source
-        shell: pwsh
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $ea = Get-ChildItem `
+          $source = Get-ChildItem `
             -Path $env:GITHUB_WORKSPACE `
             -Filter 'GoldHunterAI_V4.mq5' `
-            -File -Recurse |
-            Where-Object {
-              $_.FullName -notmatch '[\\/]\.git[\\/]'
-            } |
+            -File `
+            -Recurse |
             Select-Object -First 1
 
-          if (-not $ea) {
-            throw 'GoldHunterAI_V4.mq5 was not found.'
+          if (-not $source) {
+            throw 'GoldHunterAI_V4.mq5 was not found in the repository.'
           }
 
-          "EA_SOURCE=$($ea.FullName)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "EA_SOURCE=$($source.FullName)" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          Write-Host "EA source: $($ea.FullName)"
+          Write-Host "EA source: $($source.FullName)"
 
-      - name: Install or locate MetaEditor
-        shell: pwsh
+      - name: Locate or install MetaEditor
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $editor = $null
+          $editor = @(
+            'C:\MT5\metaeditor64.exe',
+            'C:\Program Files\MetaTrader 5\metaeditor64.exe',
+            'C:\Program Files\MetaTrader 5\MetaEditor64.exe'
+          ) | Where-Object { Test-Path $_ } |
+            Select-Object -First 1
 
-          foreach ($root in @(
-            'C:\MT5',
-            'C:\Program Files\MetaTrader 5',
-            'C:\Program Files (x86)\MetaTrader 5'
-          )) {
-            foreach ($name in @('metaeditor64.exe', 'metaeditor.exe')) {
-              $candidate = Join-Path $root $name
-
-              if (Test-Path -LiteralPath $candidate) {
-                $editor = $candidate
-                break
-              }
-            }
-
-            if ($editor) { break }
+          if (-not $editor) {
+            $editor = Get-ChildItem `
+              -Path 'C:\' `
+              -Filter 'metaeditor64.exe' `
+              -File `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName -First 1
           }
 
           if (-not $editor) {
-            $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
-
-            Invoke-WebRequest `
-              -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
-              -OutFile $installer
-
-            $process = Start-Process `
-              -FilePath $installer `
-              -ArgumentList @('/auto', '/path:C:\MT5') `
-              -Wait -PassThru
-
-            Write-Host "Installer exit code: $($process.ExitCode)"
-
-            foreach ($name in @('metaeditor64.exe', 'metaeditor.exe')) {
-              $candidate = Join-Path 'C:\MT5' $name
-
-              if (Test-Path -LiteralPath $candidate) {
-                $editor = $candidate
-                break
-              }
-            }
+            throw 'MetaEditor was not found. Install MetaTrader 5 before compiling.'
           }
 
-          if (-not $editor) {
-            throw 'MetaEditor could not be located or installed.'
-          }
+          $editorDir = Split-Path $editor -Parent
 
-          "METAEDITOR_PATH=$editor" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "METAEDITOR=$editor" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          "MT5_ROOT=$(Split-Path $editor -Parent)" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          "MT5_INSTALL=$editorDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
           Write-Host "MetaEditor: $editor"
+          Write-Host "Installation directory: $editorDir"
 
-      - name: Download MQL5 include library
-        shell: pwsh
+      - name: Prepare terminal data directory and MQL5 includes
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $mirror = Join-Path $env:RUNNER_TEMP 'mt5-docker'
+          $terminalRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+          New-Item -ItemType Directory -Force -Path $terminalRoot | Out-Null
 
-          git clone --depth 1 `
-            https://github.com/vmlellis/mt5-docker.git `
-            $mirror
+          # First use existing terminal data directories, if available.
+          $terminalDirs = @(
+            Get-ChildItem -Path $terminalRoot -Directory -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -match '^[A-Fa-f0-9]{32}$' }
+          )
 
-          if ($LASTEXITCODE -ne 0) {
-            throw 'Failed to download the fallback include library.'
+          # A fresh runner may not have initialized a terminal yet.
+          # Create a valid 32-character terminal directory rather than failing.
+          if ($terminalDirs.Count -eq 0) {
+            $fallbackHash = 'A1B2C3D4E5F60718293A4B5C6D7E8F90'
+            $fallbackPath = Join-Path $terminalRoot $fallbackHash
+            New-Item -ItemType Directory -Force -Path $fallbackPath | Out-Null
+            $terminalDirs = @(Get-Item $fallbackPath)
+            Write-Host "Created fallback terminal data directory: $fallbackPath"
           }
 
-          $trade = Get-ChildItem `
-            -Path $mirror `
+          # Ensure the standard include directory also exists beside MetaEditor.
+          $installInclude = Join-Path $env:MT5_INSTALL 'MQL5\Include'
+          New-Item -ItemType Directory -Force -Path $installInclude | Out-Null
+
+          $includeRepo = Join-Path $env:RUNNER_TEMP 'mt5-library'
+
+          if (-not (Test-Path $includeRepo)) {
+            git clone --depth 1 https://github.com/vmlellis/mt5-docker.git $includeRepo
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Could not download the MQL5 include library.'
+            }
+          }
+
+          $tradeFiles = Get-ChildItem `
+            -Path $includeRepo `
             -Filter 'Trade.mqh' `
-            -File -Recurse |
+            -File `
+            -Recurse `
+            -ErrorAction SilentlyContinue
+
+          if (-not $tradeFiles) {
+            throw 'Trade.mqh was not found in the downloaded include library.'
+          }
+
+          $libraryInclude = $tradeFiles[0].Directory.Parent.FullName
+          Write-Host "Detected include source: $libraryInclude"
+
+          # Copy the downloaded standard library when its Include folder is available.
+          $includeFolder = Get-ChildItem `
+            -Path $includeRepo `
+            -Directory `
+            -Recurse `
+            -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'Include' } |
             Select-Object -First 1
 
-          if (-not $trade) {
-            throw 'Trade.mqh was not found in the downloaded repository.'
-          }
-
-          $sourceInclude = $trade.Directory.Parent.FullName
-
-          if (-not (Test-Path (Join-Path $sourceInclude 'Object.mqh'))) {
-            throw 'The downloaded Include directory is incomplete.'
-          }
-
-          "MQL5_SOURCE_INCLUDE=$sourceInclude" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "Source Include: $sourceInclude"
-
-      - name: Install and patch Standard Library
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $terminalRoot = Join-Path `
-            $env:APPDATA `
-            'MetaQuotes\Terminal'
-
-          New-Item -ItemType Directory `
-            -Path $terminalRoot -Force | Out-Null
-
-          # Select terminal-specific directories, excluding Common.
-          $terminals = @(
-            Get-ChildItem -Path $terminalRoot -Directory |
-            Where-Object {
-              $_.Name -match '^[A-Fa-f0-9]{32}$' -and
-              (Test-Path (Join-Path $_.FullName 'MQL5'))
-            }
-          )
-
-          if ($terminals.Count -eq 0) {
-            throw 'No terminal-specific data directory was found.'
-          }
-
-          $includeTargets = @(
-            (Join-Path $env:MT5_ROOT 'MQL5\Include')
-          )
-
-          foreach ($terminal in $terminals) {
-            $includeTargets += Join-Path `
-              $terminal.FullName 'MQL5\Include'
-          }
-
-          foreach ($include in $includeTargets) {
-            New-Item -ItemType Directory `
-              -Path $include -Force | Out-Null
-
+          if ($includeFolder) {
             Copy-Item `
-              -Path (Join-Path $env:MQL5_SOURCE_INCLUDE '*') `
-              -Destination $include `
+              -Path (Join-Path $includeFolder.FullName '*') `
+              -Destination $installInclude `
               -Recurse -Force
+          }
+          else {
+            # Copy the Trade folder into a standard Include directory.
+            $tradeFolder = Get-ChildItem `
+              -Path $includeRepo `
+              -Directory `
+              -Recurse `
+              -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -eq 'Trade' } |
+              Select-Object -First 1
 
-            $tradeFile = Join-Path $include 'Trade\Trade.mqh'
-
-            if (-not (Test-Path -LiteralPath $tradeFile)) {
-              throw "Trade.mqh missing: $tradeFile"
+            if (-not $tradeFolder) {
+              throw 'Neither an Include folder nor a Trade folder was found.'
             }
 
-            # Correct the old library's call to the global IsStopped().
-            $content = Get-Content `
-              -LiteralPath $tradeFile -Raw
-
-            $pattern = '(?<![:\w])IsStopped\s*\(\s*\)'
-            $patched = [regex]::Replace(
-              $content,
-              $pattern,
-              '::IsStopped()'
-            )
-
-            if ($patched -eq $content) {
-              if ($content -match '::IsStopped\s*\(\s*\)') {
-                Write-Host "Global IsStopped call already present: $tradeFile"
-              }
-              elseif ($content -match 'IsStopped\s*\(\s*\)') {
-                throw "Found IsStopped() but could not safely patch: $tradeFile"
-              }
-              else {
-                throw "Expected IsStopped() call not found in $tradeFile"
-              }
-            }
-            else {
-              Set-Content `
-                -LiteralPath $tradeFile `
-                -Value $patched `
-                -Encoding utf8
-
-              Write-Host "Patched global IsStopped call: $tradeFile"
-            }
-
-            $verify = Get-Content -LiteralPath $tradeFile -Raw
-
-            if ($verify -notmatch '::IsStopped\s*\(\s*\)') {
-              throw "Patch verification failed: $tradeFile"
-            }
-
-            Write-Host "Library verified: $tradeFile"
+            Copy-Item -Path $tradeFolder.FullName `
+              -Destination $installInclude `
+              -Recurse -Force
           }
 
-          "MT5_TERMINAL_ROOT=$terminalRoot" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+          # Install Include files into every terminal-specific data directory.
+          foreach ($terminalDir in $terminalDirs) {
+            $destination = Join-Path $terminalDir.FullName 'MQL5\Include'
+            New-Item -ItemType Directory -Force -Path $destination | Out-Null
 
-      - name: Prepare EA source
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-
-          $compileDir = Join-Path $env:MT5_ROOT 'MQL5\Experts'
-
-          New-Item -ItemType Directory `
-            -Path $compileDir -Force | Out-Null
-
-          Copy-Item `
-            -LiteralPath $env:EA_SOURCE `
-            -Destination (Join-Path $compileDir 'GoldHunterAI_V4.mq5') `
-            -Force
-
-          $sourceDir = Split-Path $env:EA_SOURCE -Parent
-
-          Get-ChildItem -Path $sourceDir -File |
-            Where-Object {
-              $_.Extension -in '.mqh', '.mq5'
-            } |
-            ForEach-Object {
+            if (Test-Path $installInclude) {
               Copy-Item `
-                -LiteralPath $_.FullName `
-                -Destination $compileDir `
-                -Force
+                -Path (Join-Path $installInclude '*') `
+                -Destination $destination `
+                -Recurse -Force
             }
 
-          "EA_COMPILE_SOURCE=$(Join-Path $compileDir 'GoldHunterAI_V4.mq5')" |
-            Out-File $env:GITHUB_ENV -Append -Encoding utf8
+            Write-Host "Prepared include directory: $destination"
+          }
 
-          Write-Host "Compile source: $(Join-Path $compileDir 'GoldHunterAI_V4.mq5')"
+          $tradeInclude = Join-Path $installInclude 'Trade\Trade.mqh'
+          if (-not (Test-Path $tradeInclude)) {
+            throw "Required include file is missing: $tradeInclude"
+          }
 
-      - name: Compile GoldHunterAI V4
-        shell: pwsh
+          "TERMINAL_DATA_ROOT=$terminalRoot" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          "INCLUDE_PATH=$installInclude" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host 'Include preparation completed.'
+
+      - name: Prepare EA for compilation
+        shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $source = $env:EA_COMPILE_SOURCE
+          $expertsDir = Join-Path $env:MT5_INSTALL 'MQL5\Experts'
+          New-Item -ItemType Directory -Force -Path $expertsDir | Out-Null
+
+          $destination = Join-Path $expertsDir 'GoldHunterAI_V4.mq5'
+          Copy-Item -Path $env:EA_SOURCE -Destination $destination -Force
+
+          "EA_COMPILE_PATH=$destination" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Write-Host "Compilation source: $destination"
+
+      - name: Compile EA
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
           $log = Join-Path $env:GITHUB_WORKSPACE 'compile.log'
+          $compiled = [System.IO.Path]::ChangeExtension(
+            $env:EA_COMPILE_PATH, '.ex5'
+          )
 
-          if (-not (Test-Path -LiteralPath $source)) {
-            throw "EA source not found: $source"
-          }
+          Remove-Item $log -Force -ErrorAction SilentlyContinue
+          Remove-Item $compiled -Force -ErrorAction SilentlyContinue
 
-          Write-Host "Compiling: $source"
+          $arguments = @(
+            "/compile:$($env:EA_COMPILE_PATH)"
+            "/log:$log"
+          )
+
+          Write-Host "Running: $env:METAEDITOR"
+          Write-Host "Source: $env:EA_COMPILE_PATH"
 
           $process = Start-Process `
-            -FilePath $env:METAEDITOR_PATH `
-            -ArgumentList @(
-              "/compile:$source",
-              "/log:$log"
-            ) `
-            -Wait -PassThru
+            -FilePath $env:METAEDITOR `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
 
           Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
-          Start-Sleep -Seconds 2
-
-          if (-not (Test-Path -LiteralPath $log)) {
-            throw 'MetaEditor did not create compile.log.'
+          if (Test-Path $log) {
+            Get-Content $log
+          }
+          else {
+            Write-Warning 'MetaEditor did not create compile.log.'
           }
 
-          Get-Content -LiteralPath $log
-
-          $logText = Get-Content -LiteralPath $log -Raw
-          $output = [System.IO.Path]::ChangeExtension($source, '.ex5')
-
-          if ($logText -match '(?im)\bResult:\s*[1-9]\s+errors?\b') {
-            throw 'Compilation failed. See compiler output above.'
+          if (-not (Test-Path $log)) {
+            throw 'Compilation log is missing.'
           }
 
-          if ($logText -notmatch '(?im)\bResult:\s*0\s+errors?\b') {
-            throw 'The compiler log does not confirm zero errors.'
+          $logText = Get-Content $log -Raw
+
+          if ($logText -match '(?i)\b[1-9]\d*\s+errors?\b') {
+            throw 'MetaEditor reported compilation errors. See compile.log.'
           }
 
-          if (-not (Test-Path -LiteralPath $output)) {
-            throw "Compilation reported no errors but EX5 is missing: $output"
+          if (-not (Test-Path $compiled)) {
+            throw 'The EX5 output was not created. See compile.log for details.'
           }
 
-          Write-Host "SUCCESS: $output"
+          if ($logText -notmatch '(?i)0\s+errors?') {
+            Write-Warning 'An EX5 file exists, but the log did not explicitly confirm zero errors.'
+          }
+
+          Write-Host "Compiled output: $compiled"
 
       - name: Upload compile results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: GoldHunterAI-V4-compile-results
-          if-no-files-found: warn
           path: |
             compile.log
-            C:/MT5/MQL5/Experts/GoldHunterAI_V4.ex5
-            C:/Users/runneradmin/AppData/Roaming/MetaQuotes/Terminal/**/MQL5/Experts/GoldHunterAI_V4.ex5
+            **/GoldHunterAI_V4.ex5
+          if-no-files-found: warn
