@@ -177,12 +177,43 @@ jobs:
           Write-Host "Terminal version: $terminalVersion"
           Write-Host "MT5 root: $mt5Root"
 
-      - name: Validate installed MT5 Include library
+      - name: Discover and validate MT5 Include library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $installInclude = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $searchRoots = @(
+            $env:MT5_ROOT,
+            'C:\MT5',
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
+          ) | Where-Object { $_ } | Select-Object -Unique
+
+          $candidates = @()
+
+          foreach ($root in $searchRoots) {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+              continue
+            }
+
+            $directInclude = Join-Path $root 'MQL5\Include'
+
+            if (Test-Path -LiteralPath $directInclude -PathType Container) {
+              $candidates += $directInclude
+            }
+
+            if ($root -eq (Join-Path $env:APPDATA 'MetaQuotes\Terminal')) {
+              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $dataInclude = Join-Path $_.FullName 'MQL5\Include'
+
+                  if (Test-Path -LiteralPath $dataInclude -PathType Container) {
+                    $candidates += $dataInclude
+                  }
+                }
+            }
+          }
 
           $required = @(
             'Trade\Trade.mqh',
@@ -191,60 +222,68 @@ jobs:
             'Trade\AccountInfo.mqh'
           )
 
-          $missing = @()
+          $validInclude = $null
+          $diagnostics = [System.Collections.Generic.List[string]]::new()
 
-          Write-Host "MT5 root: $env:MT5_ROOT"
-          Write-Host "Checking installation Include directory: $installInclude"
+          foreach ($include in ($candidates | Select-Object -Unique)) {
+            $diagnostics.Add("Checking: $include")
+            $valid = $true
 
-          if (-not (Test-Path -LiteralPath $installInclude -PathType Container)) {
-            @(
-              "MT5 root: $env:MT5_ROOT"
-              "Include root: $installInclude"
-              'Result: Include directory missing'
-            ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
+            foreach ($relative in $required) {
+              $file = Join-Path $include $relative
 
-            throw "Installed MT5 Include directory does not exist: $installInclude"
-          }
+              if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+                $diagnostics.Add("  MISSING: $relative")
+                $valid = $false
+              }
+            }
 
-          foreach ($relative in $required) {
-            $file = Join-Path $installInclude $relative
+            $tradeFile = Join-Path $include 'Trade\Trade.mqh'
 
-            if (Test-Path -LiteralPath $file -PathType Leaf) {
-              Write-Host "FOUND: $file"
-            } else {
-              Write-Host "MISSING: $file"
-              $missing += $relative
+            if (Test-Path -LiteralPath $tradeFile -PathType Leaf) {
+              $tradeText = Get-Content -LiteralPath $tradeFile -Raw
+
+              if ($tradeText -notmatch 'SetTypeFillingBySymbol') {
+                $diagnostics.Add('  INCOMPATIBLE: SetTypeFillingBySymbol missing')
+                $valid = $false
+              }
+            }
+
+            if ($valid) {
+              $validInclude = $include
+              $diagnostics.Add("VALID: $include")
+              break
             }
           }
 
-          $tradePath = Join-Path $installInclude 'Trade\Trade.mqh'
+          if (-not $validInclude) {
+            $diagnostics.Add('RESULT: No compatible standard Include directory found.')
+            $diagnostics.Add('No third-party library downloaded.')
+            $diagnostics.Add('No library files overwritten.')
 
-          if (Test-Path -LiteralPath $tradePath -PathType Leaf) {
-            $tradeText = Get-Content -LiteralPath $tradePath -Raw
+            $diagnostics |
+              Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
 
-            if ($tradeText -notmatch 'SetTypeFillingBySymbol') {
-              Write-Host 'INCOMPATIBLE: SetTypeFillingBySymbol was not found.'
-              $missing += 'Trade\Trade.mqh: SetTypeFillingBySymbol missing'
-            }
+            throw 'No compatible MQL5 Include library found. Review include-diagnostics.txt.'
           }
 
-          @(
-            "MT5 root: $env:MT5_ROOT"
-            "MetaEditor: $env:METAEDITOR_PATH"
-            "Include root: $installInclude"
-            "Missing or incompatible entries: $($missing -join ', ')"
-            'Third-party fallback: disabled'
-            'Include files overwritten: no'
-          ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
+          $mql5Root = Split-Path -Parent $validInclude
+          $dataRoot = Split-Path -Parent $mql5Root
 
-          if ($missing.Count -gt 0) {
-            throw "Installed MT5 standard library is incomplete or incompatible. See include-diagnostics.txt. No replacement library was downloaded."
-          }
+          "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
+          "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
 
-          "MQL5_INCLUDE=$installInclude" >> $env:GITHUB_ENV
+          $diagnostics.Add("Selected Include: $validInclude")
+          $diagnostics.Add("Selected MQL5 root: $mql5Root")
+          $diagnostics.Add("Selected data root: $dataRoot")
+          $diagnostics.Add('Third-party fallback: disabled')
+          $diagnostics.Add('Include files overwritten: no')
 
-          Write-Host "Validated installed Include directory: $installInclude"
+          $diagnostics |
+            Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
 
+          Write-Host "Selected Include: $validInclude"
+          Write-Host "Selected data root: $dataRoot"
       - name: Prepare compilation environment
         shell: pwsh
         run: |
@@ -256,8 +295,7 @@ jobs:
           $target = Join-Path $expertDir 'GoldHunterAI_V4_11.mq5'
           Copy-Item -LiteralPath $env:EA_SOURCE -Destination $target -Force
 
-          $ex5 = Join-Path $expertDir 'GoldHunterAI_V4_11.ex5'
-
+          $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'
           if (Test-Path -LiteralPath $ex5) {
             Remove-Item -LiteralPath $ex5 -Force
           }
@@ -340,7 +378,7 @@ jobs:
           }
 
           if ($env:MT5_ROOT) {
-            $ex5 = Join-Path $env:MT5_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'
+            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'I
             $artifactEx5 = Join-Path $resultDir 'GoldHunterAI_V4_11.ex5'
 
             if ((Test-Path -LiteralPath $ex5 -PathType Leaf) -and
