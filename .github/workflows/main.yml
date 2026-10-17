@@ -254,7 +254,7 @@ jobs:
             $libraryDir = Join-Path $env:RUNNER_TEMP 'mql5-library'
 
             Invoke-WebRequest `
-              -Uri 'https://github.com/vmlellis/mt5-docker/archive/refs/heads/main.zip' `
+             -Uri 'https://github.com/vmlellis/mt5-docker/archive/refs/heads/master.zip' `
               -OutFile $libraryZip `
               -UseBasicParsing
 
