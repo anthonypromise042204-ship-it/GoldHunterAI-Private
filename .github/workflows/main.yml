@@ -152,78 +152,18 @@ jobs:
               }
           }
 
-          $candidateDirs += Join-Path $env:GITHUB_WORKSPACE 'Include'
 
-          $sourceInclude = $null
+      - name: Locate and validate MQL5 Include library
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
 
-          foreach ($candidate in $candidateDirs) {
-            if (-not (Test-Path -LiteralPath $candidate)) {
-              continue
-            }
-
-            $trade = Join-Path $candidate 'Trade\Trade.mqh'
-            $position = Join-Path $candidate 'Trade\PositionInfo.mqh'
-
-            if ((Test-Path -LiteralPath $trade -PathType Leaf) -and
-                (Test-Path -LiteralPath $position -PathType Leaf)) {
-              $sourceInclude = $candidate
-              Write-Host "Found Include root: $candidate"
-              break
-            }
-          }
-
-          if (-not $sourceInclude) {
-            $zip = Join-Path $env:RUNNER_TEMP 'mql5-library.zip'
-            $extract = Join-Path $env:RUNNER_TEMP 'mql5-library'
-
-            Invoke-WebRequest `
-              -Uri 'https://github.com/vmlellis/mt5-docker/archive/refs/heads/master.zip' `
-              -OutFile $zip `
-              -UseBasicParsing
-
-            Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
-
-            $tradeFiles = Get-ChildItem `
-              -LiteralPath $extract `
-              -Filter 'Trade.mqh' `
-              -File `
-              -Recurse `
-              -ErrorAction SilentlyContinue
-
-            foreach ($tradeFile in $tradeFiles) {
-              if ($tradeFile.FullName -match '[\\/]Include[\\/]Trade[\\/]Trade\.mqh$') {
-                $candidate = Split-Path -Parent (Split-Path -Parent $tradeFile.FullName)
-
-                if ((Test-Path -LiteralPath (Join-Path $candidate 'Trade\PositionInfo.mqh')) -and
-                    (Test-Path -LiteralPath (Join-Path $candidate 'Trade\SymbolInfo.mqh'))) {
-                  $sourceInclude = $candidate
-                  break
-                }
-              }
-            }
-          }
-
-          if (-not $sourceInclude) {
-            throw 'Could not find a usable Include root containing the required Trade files.'
-          }
-
-          $required = @(
-            'Trade\Trade.mqh',
-            'Trade\PositionInfo.mqh',
-            'Trade\SymbolInfo.mqh',
-            'Trade\AccountInfo.mqh'
-          )
-
-          foreach ($relative in $required) {
-            if (-not (Test-Path -LiteralPath (Join-Path $sourceInclude $relative) -PathType Leaf)) {
-              throw "Required include missing: $relative"
-            }
-          }
-
-          $destinations = @($installInclude)
+          $installInclude = Join-Path $env:MT5_ROOT 'MQL5\Include'
+          $roamingRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+          $candidates = @($installInclude)
 
           if (Test-Path -LiteralPath $roamingRoot) {
-            $destinations += Get-ChildItem `
+            $candidates += Get-ChildItem `
               -LiteralPath $roamingRoot `
               -Directory `
               -ErrorAction SilentlyContinue |
@@ -232,34 +172,54 @@ jobs:
               }
           }
 
-          foreach ($destination in ($destinations | Select-Object -Unique)) {
-            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+          $validInclude = $null
 
-            if ([IO.Path]::GetFullPath($sourceInclude).TrimEnd('\') -ne
-                [IO.Path]::GetFullPath($destination).TrimEnd('\')) {
-              Copy-Item `
-                -Path (Join-Path $sourceInclude '*') `
-                -Destination $destination `
-                -Recurse `
-                -Force
+          foreach ($candidate in ($candidates | Select-Object -Unique)) {
+            $trade = Join-Path $candidate 'Trade\Trade.mqh'
+            $position = Join-Path $candidate 'Trade\PositionInfo.mqh'
+            $symbol = Join-Path $candidate 'Trade\SymbolInfo.mqh'
+            $account = Join-Path $candidate 'Trade\AccountInfo.mqh'
+
+            if (-not (
+              (Test-Path -LiteralPath $trade -PathType Leaf) -and
+              (Test-Path -LiteralPath $position -PathType Leaf) -and
+              (Test-Path -LiteralPath $symbol -PathType Leaf) -and
+              (Test-Path -LiteralPath $account -PathType Leaf)
+            )) {
+              continue
             }
 
-            if (-not (Test-Path -LiteralPath (Join-Path $destination 'Trade\Trade.mqh') -PathType Leaf)) {
-              throw "Trade.mqh missing after setup: $destination"
+            $tradeText = Get-Content -LiteralPath $trade -Raw
+
+            if ($tradeText -notmatch 'SetTypeFillingBySymbol') {
+              Write-Host "Rejected incompatible Trade.mqh: $trade"
+              continue
             }
+
+            $validInclude = $candidate
+            Write-Host "Validated Include root: $candidate"
+            break
           }
 
+          if (-not $validInclude) {
+            throw 'No compatible MQL5 Include library found. No files were overwritten. Install or update the official MT5 standard library before rebuilding.'
+          }
+
+          $tradePath = Join-Path $validInclude 'Trade\Trade.mqh'
+
           @(
-            "Source Include root: $sourceInclude"
-            "Install Include root: $installInclude"
-            "Trade.mqh: present"
+            "Validated Include root: $validInclude"
+            "Trade.mqh: $tradePath"
+            "SetTypeFillingBySymbol: present"
             "PositionInfo.mqh: present"
             "SymbolInfo.mqh: present"
             "AccountInfo.mqh: present"
+            "Library files overwritten: no"
           ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
 
-          "MQL5_INCLUDE=$installInclude" >> $env:GITHUB_ENV
-          Write-Host "MQL5 Include root: $installInclude"
+          "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
+          Write-Host "MQL5 Include root: $validInclude"
+
 
       - name: Prepare compilation environment
         shell: pwsh
