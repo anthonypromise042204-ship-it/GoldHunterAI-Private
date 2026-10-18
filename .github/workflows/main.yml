@@ -236,7 +236,6 @@ jobs:
           ) | Out-File "build-output/library-sync-diagnostics.txt" -Encoding utf8
 
           Write-Host "Trade.mqh found and hash-verified."
-
       - name: Compile GoldHunterAI V4.11
         shell: pwsh
         run: |
@@ -245,14 +244,75 @@ jobs:
           $source = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V4_11.mq5"
           $editor = $env:METAEDITOR_PATH
           $log = Join-Path $env:GITHUB_WORKSPACE "build-output\GoldHunterAI_V4_11_compile.log"
-          $output = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V4_11.ex5"
+          $workspaceOutput = Join-Path $env:GITHUB_WORKSPACE "GoldHunterAI_V4_11.ex5"
 
-          if (Test-Path -LiteralPath $output) {
-              Remove-Item -LiteralPath $output -Force
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "Source EA file not found: $source"
           }
 
-          $arguments = "/compile:`"$source`" /log:`"$log`""
-          $process = Start-Process -FilePath $editor -ArgumentList $arguments -Wait -PassThru
+          if (-not (Test-Path -LiteralPath $editor -PathType Leaf)) {
+              throw "MetaEditor was not found: $editor"
+          }
+
+          # Find the active terminal data directory containing the synchronized library.
+          $terminalRoots = @(
+              (Join-Path $env:APPDATA "MetaQuotes\Terminal"),
+              (Join-Path $env:LOCALAPPDATA "MetaQuotes\Terminal")
+          )
+
+          $dataDirectory = $null
+
+          foreach ($root in $terminalRoots) {
+              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
+                  continue
+              }
+
+              $candidate = Get-ChildItem -LiteralPath $root -Directory `
+                  -ErrorAction SilentlyContinue |
+                  Where-Object {
+                      Test-Path -LiteralPath (
+                          Join-Path $_.FullName "MQL5\Include\Trade\Trade.mqh"
+                      ) -PathType Leaf
+                  } |
+                  Select-Object -First 1
+
+              if ($candidate) {
+                  $dataDirectory = $candidate.FullName
+                  break
+              }
+          }
+
+          if (-not $dataDirectory) {
+              throw "No terminal data directory containing MQL5\Include\Trade\Trade.mqh was found."
+          }
+
+          $expertsDirectory = Join-Path $dataDirectory "MQL5\Experts"
+          New-Item -ItemType Directory -Path $expertsDirectory -Force | Out-Null
+
+          $compileSource = Join-Path $expertsDirectory "GoldHunterAI_V4_11.mq5"
+          $compileOutput = Join-Path $expertsDirectory "GoldHunterAI_V4_11.ex5"
+
+          Copy-Item -LiteralPath $source -Destination $compileSource -Force
+
+          if (Test-Path -LiteralPath $compileOutput) {
+              Remove-Item -LiteralPath $compileOutput -Force
+          }
+
+          if (Test-Path -LiteralPath $workspaceOutput) {
+              Remove-Item -LiteralPath $workspaceOutput -Force
+          }
+
+          @(
+              "MetaEditor: $editor"
+              "Terminal data directory: $dataDirectory"
+              "Include library: $(Join-Path $dataDirectory 'MQL5\Include')"
+              "Compile source: $compileSource"
+          ) | Out-File "build-output/compile-path-diagnostics.txt" -Encoding utf8
+
+          $arguments = "/compile:`"$compileSource`" /log:`"$log`""
+
+          $process = Start-Process -FilePath $editor `
+              -ArgumentList $arguments -Wait -PassThru
 
           Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
@@ -280,26 +340,29 @@ jobs:
               throw "Compilation failed: $errors error(s), $warnings warning(s)."
           }
 
-          if (-not (Test-Path -LiteralPath $output -PathType Leaf)) {
-              throw "Compilation reported no errors, but the EX5 file was not created."
+          if (-not (Test-Path -LiteralPath $compileOutput -PathType Leaf)) {
+              throw "Compiler reported zero errors but produced no EX5 file."
           }
 
-          $size = (Get-Item -LiteralPath $output).Length
+          $size = (Get-Item -LiteralPath $compileOutput).Length
 
           if ($size -le 0) {
-              throw "The EX5 file is empty."
+              throw "The compiled EX5 file is empty."
           }
 
-          Copy-Item -LiteralPath $output `
+          Copy-Item -LiteralPath $compileOutput `
               -Destination "build-output\GoldHunterAI_V4_11.ex5" -Force
+
+          Copy-Item -LiteralPath $compileOutput `
+              -Destination $workspaceOutput -Force
 
           @(
               "Compiler errors: $errors"
               "Compiler warnings: $warnings"
               "EX5 size: $size bytes"
+              "Compiled source: $compileSource"
               "Build status: Success"
           ) | Out-File "build-output/build-summary.txt" -Encoding utf8
-
       - name: Upload build diagnostics and compiled file
         if: always()
         uses: actions/upload-artifact@v4
