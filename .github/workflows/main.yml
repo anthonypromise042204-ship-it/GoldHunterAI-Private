@@ -209,7 +209,77 @@ jobs:
                   $dataInclude = Join-Path $_.FullName 'MQL5\Include'
 
                   if (Test-Path -LiteralPath $dataInclude -PathType Container) {
-                    $candidates += $dataInclude
+      - name: Discover and validate MT5 Include library
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          $buildOutput = $env:BUILD_OUTPUT
+
+          if ([string]::IsNullOrWhiteSpace($buildOutput)) {
+            $buildOutput = Join-Path $env:GITHUB_WORKSPACE 'build-output'
+          }
+
+          New-Item -ItemType Directory -Path $buildOutput -Force | Out-Null
+
+          $diagnosticFile = Join-Path $buildOutput 'include-diagnostics.txt'
+          $diagnostics = [System.Collections.Generic.List[string]]::new()
+
+          $diagnostics.Add('=== MT5 INCLUDE LIBRARY DIAGNOSTICS ===')
+          $diagnostics.Add("Date: $(Get-Date -Format o)")
+          $diagnostics.Add("MT5_ROOT: $env:MT5_ROOT")
+          $diagnostics.Add("APPDATA: $env:APPDATA")
+          $diagnostics.Add('')
+
+          $searchRoots = @(
+            $env:MT5_ROOT,
+            'C:\MT5',
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
+          ) | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+          } | Select-Object -Unique
+
+          $candidates = [System.Collections.Generic.List[string]]::new()
+
+          foreach ($root in $searchRoots) {
+            $diagnostics.Add("SEARCH ROOT: $root")
+
+            if (Test-Path -LiteralPath $root -PathType Container) {
+              $diagnostics.Add('  Root exists: YES')
+            }
+            else {
+              $diagnostics.Add('  Root exists: NO')
+              continue
+            }
+
+            $directInclude = Join-Path $root 'MQL5\Include'
+
+            if (Test-Path -LiteralPath $directInclude -PathType Container) {
+              $diagnostics.Add("  Include directory found: $directInclude")
+              $candidates.Add($directInclude)
+            }
+            else {
+              $diagnostics.Add("  Include directory missing: $directInclude")
+            }
+
+            $terminalDataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+
+            if ($root -eq $terminalDataRoot) {
+              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $dataRoot = $_.FullName
+                  $dataInclude = Join-Path $dataRoot 'MQL5\Include'
+
+                  $diagnostics.Add("  Terminal data folder: $dataRoot")
+
+                  if (Test-Path -LiteralPath $dataInclude -PathType Container) {
+                    $diagnostics.Add("  Terminal Include found: $dataInclude")
+                    $candidates.Add($dataInclude)
+                  }
+                  else {
+                    $diagnostics.Add("  Terminal Include missing: $dataInclude")
                   }
                 }
             }
@@ -223,16 +293,19 @@ jobs:
           )
 
           $validInclude = $null
-          $diagnostics = [System.Collections.Generic.List[string]]::new()
 
           foreach ($include in ($candidates | Select-Object -Unique)) {
-            $diagnostics.Add("Checking: $include")
+            $diagnostics.Add('')
+            $diagnostics.Add("CHECKING CANDIDATE: $include")
             $valid = $true
 
             foreach ($relative in $required) {
               $file = Join-Path $include $relative
 
-              if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              if (Test-Path -LiteralPath $file -PathType Leaf) {
+                $diagnostics.Add("  FOUND: $relative")
+              }
+              else {
                 $diagnostics.Add("  MISSING: $relative")
                 $valid = $false
               }
@@ -243,47 +316,54 @@ jobs:
             if (Test-Path -LiteralPath $tradeFile -PathType Leaf) {
               $tradeText = Get-Content -LiteralPath $tradeFile -Raw
 
-              if ($tradeText -notmatch 'SetTypeFillingBySymbol') {
-                $diagnostics.Add('  INCOMPATIBLE: SetTypeFillingBySymbol missing')
+              if ($tradeText -match 'SetTypeFillingBySymbol') {
+                $diagnostics.Add('  Compatibility check: SetTypeFillingBySymbol found')
+              }
+              else {
+                $diagnostics.Add('  INCOMPATIBLE: SetTypeFillingBySymbol not found')
                 $valid = $false
               }
             }
 
             if ($valid) {
               $validInclude = $include
-              $diagnostics.Add("VALID: $include")
+              $diagnostics.Add("VALID INCLUDE SELECTED: $include")
               break
             }
           }
 
-          if (-not $validInclude) {
-            $diagnostics.Add('RESULT: No compatible standard Include directory found.')
-            $diagnostics.Add('No third-party library downloaded.')
-            $diagnostics.Add('No library files overwritten.')
+          if ($validInclude) {
+            $mql5Root = Split-Path -Parent $validInclude
+            $dataRoot = Split-Path -Parent $mql5Root
 
-            $diagnostics |
-              Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
+            "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
+            "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
 
-            throw 'No compatible MQL5 Include library found. Review include-diagnostics.txt.'
+            $diagnostics.Add('')
+            $diagnostics.Add("Selected Include: $validInclude")
+            $diagnostics.Add("Selected MQL5 root: $mql5Root")
+            $diagnostics.Add("Selected data root: $dataRoot")
+            $diagnostics.Add('No third-party libraries downloaded.')
+            $diagnostics.Add('No Include files overwritten.')
+
+            $diagnostics | Set-Content -LiteralPath $diagnosticFile
+
+            Write-Host "Selected Include: $validInclude"
+            Write-Host "Selected data root: $dataRoot"
           }
+          else {
+            $diagnostics.Add('')
+            $diagnostics.Add('RESULT: No compatible standard Include directory found.')
+            $diagnostics.Add('No third-party libraries downloaded.')
+            $diagnostics.Add('No Include files overwritten.')
 
-          $mql5Root = Split-Path -Parent $validInclude
-          $dataRoot = Split-Path -Parent $mql5Root
+            $diagnostics | Set-Content -LiteralPath $diagnosticFile
 
-          "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
-          "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
+            Write-Host 'Include discovery failed. Diagnostics saved.'
+            Get-Content -LiteralPath $diagnosticFile
 
-          $diagnostics.Add("Selected Include: $validInclude")
-          $diagnostics.Add("Selected MQL5 root: $mql5Root")
-          $diagnostics.Add("Selected data root: $dataRoot")
-          $diagnostics.Add('Third-party fallback: disabled')
-          $diagnostics.Add('Include files overwritten: no')
-
-          $diagnostics |
-            Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
-
-          Write-Host "Selected Include: $validInclude"
-          Write-Host "Selected data root: $dataRoot"
+            throw 'No compatible MQL5 Include library found. Review build-output/include-diagnostics.txt.'
+          }
       - name: Prepare compilation environment
         shell: pwsh
         run: |
