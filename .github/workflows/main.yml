@@ -137,26 +137,45 @@ jobs:
           $log = Join-Path $outputDir 'GoldHunterAI_V4_11_compile.log'
           $ex5 = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.ex5'
 
-          $includeDir = "$env:APPDATA\MetaQuotes\Terminal\D0E8209F77C8CF37AD8BF550E51FF075\MQL5\Include"
+          $roots = @(
+            "$env:APPDATA\MetaQuotes\Terminal",
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5'
+          )
 
-          if (-not (Test-Path (Join-Path $includeDir 'Trade\Trade.mqh'))) {
-            throw "Trade.mqh was not found at the expected include path: $includeDir"
+          $tradeFile = $null
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $found = Get-ChildItem -Path $root -Filter 'Trade.mqh' `
+                -File -Recurse -ErrorAction SilentlyContinue |
+                Where-Object {
+                  $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+                } |
+                Select-Object -First 1
+
+              if ($found) {
+                $tradeFile = $found
+                break
+              }
+            }
           }
+
+          if (-not $tradeFile) {
+            throw "Could not discover Trade.mqh. The terminal's standard library must be installed or initialized."
+          }
+
+          $includeDir = Split-Path (Split-Path $tradeFile.FullName -Parent) -Parent
+
+          Write-Host "Using Trade.mqh: $($tradeFile.FullName)"
+          Write-Host "Using include directory: $includeDir"
 
           if (Test-Path $ex5) {
             Remove-Item $ex5 -Force
           }
 
-          Write-Host "Source: $source"
-          Write-Host "Include directory: $includeDir"
-          Write-Host "Compiler: $env:METAEDITOR_PATH"
-
           $arguments = "/compile:`"$source`" /include:`"$includeDir`" /log:`"$log`""
-
-          $process = Start-Process `
-            -FilePath $env:METAEDITOR_PATH `
-            -ArgumentList $arguments `
-            -Wait -PassThru
+          $process = Start-Process -FilePath $env:METAEDITOR_PATH `
+            -ArgumentList $arguments -Wait -PassThru
 
           Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
@@ -172,7 +191,7 @@ jobs:
 
           Copy-Item $log $outputDir -Force
           Copy-Item $ex5 $outputDir -Force
-          Write-Host "Nonempty EX5 file produced successfully."
+          Write-Host "Nonempty EX5 file produced."
 
       - name: Upload build diagnostics
         if: always()
