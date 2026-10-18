@@ -1,4 +1,4 @@
-name: GOLD HUNTER AI V4.11 Compiler
+name: GOLD HUNTER AI V3.4 Compiler
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
       - main
       - goldhunter-v4-safety-upgrade
     paths:
-      - 'GoldHunterAI_V4_11.mq5'
+      - 'GoldHunterAI_V3_4.mq5'
       - '.github/workflows/main.yml'
       - 'Include/**'
       - 'Libraries/**'
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   compile:
-    name: Compile GoldHunterAI V4.11
+    name: Compile GoldHunterAI V3.4
     runs-on: windows-latest
     timeout-minutes: 30
 
@@ -33,20 +33,23 @@ jobs:
           New-Item -ItemType Directory -Path $buildDir -Force | Out-Null
           "BUILD_OUTPUT=$buildDir" >> $env:GITHUB_ENV
 
-      - name: Verify V4.11 source
+      - name: Verify V3.4 source
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.mq5'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V3_4.mq5'
 
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
-            throw 'GoldHunterAI_V4_11.mq5 was not found.'
+            throw 'GoldHunterAI_V3_4.mq5 was not found.'
           }
 
-          $version = Select-String -LiteralPath $source -Pattern '^\s*#property\s+version\s+"4\.11"\s*$' -ErrorAction SilentlyContinue
+          $version = Select-String `
+            -LiteralPath $source `
+            -Pattern '^\s*#property\s+version\s+"3\.40"\s*$' `
+            -ErrorAction SilentlyContinue
 
           if (-not $version) {
-            throw 'Expected version 4.11 was not found.'
+            throw 'Expected #property version "3.40" was not found.'
           }
 
           $hash = Get-FileHash -LiteralPath $source -Algorithm SHA256
@@ -54,13 +57,14 @@ jobs:
           @(
             "Source: $source"
             "SHA256: $($hash.Hash)"
-            "Version: 4.11"
+            "Version: 3.40"
           ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'source-diagnostics.txt')
 
           "EA_SOURCE=$source" >> $env:GITHUB_ENV
 
           Write-Host "Verified source: $source"
           Write-Host "SHA256: $($hash.Hash)"
+          Write-Host 'Version: 3.40'
 
       - name: Download MetaTrader 5 installer
         shell: pwsh
@@ -70,8 +74,7 @@ jobs:
 
           Invoke-WebRequest `
             -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
-            -OutFile $installer `
-            -UseBasicParsing
+            -OutFile $installer
 
           if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
             throw 'MetaTrader installer download failed.'
@@ -182,38 +185,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $searchRoots = @(
-            $env:MT5_ROOT,
-            'C:\MT5',
-            'C:\Program Files\MetaTrader 5',
-            'C:\Program Files (x86)\MetaTrader 5',
-            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
-          ) | Where-Object { $_ } | Select-Object -Unique
-
-          $candidates = @()
-
-          foreach ($root in $searchRoots) {
-            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-              continue
-            }
-
-            $directInclude = Join-Path $root 'MQL5\Include'
-
-            if (Test-Path -LiteralPath $directInclude -PathType Container) {
-              $candidates += $directInclude
-            }
-
-            if ($root -eq (Join-Path $env:APPDATA 'MetaQuotes\Terminal')) {
-              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                  $dataInclude = Join-Path $_.FullName 'MQL5\Include'
-
-                  if (Test-Path -LiteralPath $dataInclude -PathType Container) {
-      - name: Discover and validate MT5 Include library
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-
           $buildOutput = $env:BUILD_OUTPUT
 
           if ([string]::IsNullOrWhiteSpace($buildOutput)) {
@@ -231,12 +202,14 @@ jobs:
           $diagnostics.Add("APPDATA: $env:APPDATA")
           $diagnostics.Add('')
 
+          $terminalDataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
+
           $searchRoots = @(
             $env:MT5_ROOT,
             'C:\MT5',
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
-            (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
+            $terminalDataRoot
           ) | Where-Object {
             -not [string]::IsNullOrWhiteSpace($_)
           } | Select-Object -Unique
@@ -246,13 +219,12 @@ jobs:
           foreach ($root in $searchRoots) {
             $diagnostics.Add("SEARCH ROOT: $root")
 
-            if (Test-Path -LiteralPath $root -PathType Container) {
-              $diagnostics.Add('  Root exists: YES')
-            }
-            else {
+            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
               $diagnostics.Add('  Root exists: NO')
               continue
             }
+
+            $diagnostics.Add('  Root exists: YES')
 
             $directInclude = Join-Path $root 'MQL5\Include'
 
@@ -264,10 +236,11 @@ jobs:
               $diagnostics.Add("  Include directory missing: $directInclude")
             }
 
-            $terminalDataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-
             if ($root -eq $terminalDataRoot) {
-              Get-ChildItem -LiteralPath $root -Directory -ErrorAction SilentlyContinue |
+              Get-ChildItem `
+                -LiteralPath $root `
+                -Directory `
+                -ErrorAction SilentlyContinue |
                 ForEach-Object {
                   $dataRoot = $_.FullName
                   $dataInclude = Join-Path $dataRoot 'MQL5\Include'
@@ -332,26 +305,7 @@ jobs:
             }
           }
 
-          if ($validInclude) {
-            $mql5Root = Split-Path -Parent $validInclude
-            $dataRoot = Split-Path -Parent $mql5Root
-
-            "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
-            "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
-
-            $diagnostics.Add('')
-            $diagnostics.Add("Selected Include: $validInclude")
-            $diagnostics.Add("Selected MQL5 root: $mql5Root")
-            $diagnostics.Add("Selected data root: $dataRoot")
-            $diagnostics.Add('No third-party libraries downloaded.')
-            $diagnostics.Add('No Include files overwritten.')
-
-            $diagnostics | Set-Content -LiteralPath $diagnosticFile
-
-            Write-Host "Selected Include: $validInclude"
-            Write-Host "Selected data root: $dataRoot"
-          }
-          else {
+          if (-not $validInclude) {
             $diagnostics.Add('')
             $diagnostics.Add('RESULT: No compatible standard Include directory found.')
             $diagnostics.Add('No third-party libraries downloaded.')
@@ -364,6 +318,25 @@ jobs:
 
             throw 'No compatible MQL5 Include library found. Review build-output/include-diagnostics.txt.'
           }
+
+          $mql5Root = Split-Path -Parent $validInclude
+          $dataRoot = Split-Path -Parent $mql5Root
+
+          "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
+          "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
+
+          $diagnostics.Add('')
+          $diagnostics.Add("Selected Include: $validInclude")
+          $diagnostics.Add("Selected MQL5 root: $mql5Root")
+          $diagnostics.Add("Selected data root: $dataRoot")
+          $diagnostics.Add('No third-party libraries downloaded.')
+          $diagnostics.Add('No Include files overwritten.')
+
+          $diagnostics | Set-Content -LiteralPath $diagnosticFile
+
+          Write-Host "Selected Include: $validInclude"
+          Write-Host "Selected data root: $dataRoot"
+
       - name: Prepare compilation environment
         shell: pwsh
         run: |
@@ -380,8 +353,8 @@ jobs:
           $expertDir = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts'
           New-Item -ItemType Directory -Path $expertDir -Force | Out-Null
 
-          $target = Join-Path $expertDir 'GoldHunterAI_V4_11.mq5'
-          $ex5 = Join-Path $expertDir 'GoldHunterAI_V4_11.ex5'
+          $target = Join-Path $expertDir 'GoldHunterAI_V3_4.mq5'
+          $ex5 = Join-Path $expertDir 'GoldHunterAI_V3_4.ex5'
 
           Copy-Item -LiteralPath $env:EA_SOURCE -Destination $target -Force
 
@@ -401,12 +374,13 @@ jobs:
           Write-Host "EA source: $target"
           Write-Host "Expected EX5: $ex5"
           Write-Host "Include root: $env:MQL5_INCLUDE"
-      - name: Compile GoldHunterAI V4.11
+
+      - name: Compile GoldHunterAI V3.4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $compileLog = Join-Path $env:BUILD_OUTPUT 'GoldHunterAI_V4_11_compile.log'
+          $compileLog = Join-Path $env:BUILD_OUTPUT 'GoldHunterAI_V3_4_compile.log'
 
           $process = Start-Process `
             -FilePath $env:METAEDITOR_PATH `
@@ -468,9 +442,9 @@ jobs:
             New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
           }
 
-          if ($env:MT5_ROOT) {
-            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'
-            $artifactEx5 = Join-Path $resultDir 'GoldHunterAI_V4_11.ex5'
+          if ($env:MQL5_DATA_ROOT) {
+            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V3_4.ex5'
+            $artifactEx5 = Join-Path $resultDir 'GoldHunterAI_V3_4.ex5'
 
             if ((Test-Path -LiteralPath $ex5 -PathType Leaf) -and
                 ([IO.Path]::GetFullPath($ex5) -ne [IO.Path]::GetFullPath($artifactEx5))) {
@@ -486,7 +460,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: GoldHunterAI-V4.11-build-results
+          name: GoldHunterAI-V3.4-build-results
           path: build-output/
           if-no-files-found: warn
           retention-days: 14
