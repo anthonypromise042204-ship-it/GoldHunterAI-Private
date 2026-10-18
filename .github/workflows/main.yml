@@ -289,27 +289,38 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $expertDir = Join-Path $env:MT5_ROOT 'MQL5\Experts'
+          if (-not $env:MQL5_DATA_ROOT) {
+            throw 'MQL5_DATA_ROOT was not set by library discovery.'
+          }
+
+          if (-not $env:MQL5_INCLUDE) {
+            throw 'MQL5_INCLUDE was not set by library discovery.'
+          }
+
+          $expertDir = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts'
           New-Item -ItemType Directory -Path $expertDir -Force | Out-Null
 
           $target = Join-Path $expertDir 'GoldHunterAI_V4_11.mq5'
+          $ex5 = Join-Path $expertDir 'GoldHunterAI_V4_11.ex5'
+
           Copy-Item -LiteralPath $env:EA_SOURCE -Destination $target -Force
 
-          $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'
           if (Test-Path -LiteralPath $ex5) {
             Remove-Item -LiteralPath $ex5 -Force
           }
 
-          if (-not (Test-Path -LiteralPath (Join-Path $env:MQL5_INCLUDE 'Trade\Trade.mqh') -PathType Leaf)) {
-            throw 'Trade.mqh is missing immediately before compilation.'
+          $tradeFile = Join-Path $env:MQL5_INCLUDE 'Trade\Trade.mqh'
+
+          if (-not (Test-Path -LiteralPath $tradeFile -PathType Leaf)) {
+            throw "Trade.mqh is missing: $tradeFile"
           }
 
           "EA_TARGET=$target" >> $env:GITHUB_ENV
           "EA_EX5=$ex5" >> $env:GITHUB_ENV
 
           Write-Host "EA source: $target"
+          Write-Host "Expected EX5: $ex5"
           Write-Host "Include root: $env:MQL5_INCLUDE"
-
       - name: Compile GoldHunterAI V4.11
         shell: pwsh
         run: |
@@ -378,7 +389,7 @@ jobs:
           }
 
           if ($env:MT5_ROOT) {
-            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'I
+            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V4_11.ex5'
             $artifactEx5 = Join-Path $resultDir 'GoldHunterAI_V4_11.ex5'
 
             if ((Test-Path -LiteralPath $ex5 -PathType Leaf) -and
