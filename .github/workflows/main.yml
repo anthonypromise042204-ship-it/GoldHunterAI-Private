@@ -143,104 +143,127 @@ jobs:
 
           "METAEDITOR_PATH=$editor" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
           "MT5_TERMINAL_PATH=$terminal" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
       - name: Initialize terminal and locate official MQL5 library
         shell: pwsh
         run: |
-          $ErrorActionPreference = "Stop"
+          $ErrorActionPreference = 'Stop'
 
           $terminal = $env:MT5_TERMINAL_PATH
-          $installDir = Split-Path -Parent $terminal
-
-          $init = Start-Process -FilePath $terminal -ArgumentList "/portable" -PassThru
-          Start-Sleep -Seconds 15
-
-          if (-not $init.HasExited) {
-              Stop-Process -Id $init.Id -Force -ErrorAction SilentlyContinue
+          if (-not $terminal -or -not (Test-Path -LiteralPath $terminal)) {
+            throw "MT5_TERMINAL_PATH is missing or invalid: $terminal"
           }
 
+          $installDir = Split-Path -Parent $terminal
+          $installInclude = Join-Path $installDir 'MQL5\Include'
+
+          Write-Host "MT5 installation: $installDir"
+
+          # Locate a genuine Include tree containing Trade.mqh.
           $searchRoots = @(
-              (Join-Path $installDir "MQL5\Include"),
-              (Join-Path $env:APPDATA "MetaQuotes\Terminal"),
-              (Join-Path $env:LOCALAPPDATA "MetaQuotes\Terminal"),
-              "C:\Program Files\MetaTrader 5\MQL5\Include",
-              "C:\Program Files (x86)\MetaTrader 5\MQL5\Include"
-          )
+            (Join-Path $env:APPDATA 'MetaQuotes\Terminal'),
+            (Join-Path $env:LOCALAPPDATA 'MetaQuotes\Terminal'),
+            $installInclude
+          ) | Where-Object { $_ -and (Test-Path -LiteralPath $_) }
 
           $sourceInclude = $null
 
           foreach ($root in $searchRoots) {
-              if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-                  continue
-              }
+            $candidate = Get-Item -LiteralPath $root
 
-              if ((Split-Path $root -Leaf) -eq "Include") {
-                  $tradeFile = Join-Path $root "Trade\Trade.mqh"
+            if ($candidate.Name -eq 'Include' -and
+                (Test-Path -LiteralPath (Join-Path $root 'Trade\Trade.mqh'))) {
+              $sourceInclude = $root
+              break
+            }
 
-                  if (Test-Path -LiteralPath $tradeFile -PathType Leaf) {
-                      $sourceInclude = $root
-                      break
-                  }
-              }
-              else {
-                  $match = Get-ChildItem -LiteralPath $root -Filter "Trade.mqh" -File -Recurse -ErrorAction SilentlyContinue |
-                      Where-Object {
-                          $_.FullName -match '\\MQL5\\Include\\Trade\\Trade\.mqh$'
-                      } |
-                      Select-Object -First 1
+            $match = Get-ChildItem -LiteralPath $root `
+              -Filter 'Trade.mqh' -File -Recurse -ErrorAction SilentlyContinue |
+              Where-Object {
+                $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+              } |
+              Select-Object -First 1
 
-                  if ($match) {
-                      $sourceInclude = Split-Path -Parent (Split-Path -Parent $match.FullName)
-                      break
-                  }
-              }
+            if ($match) {
+              $sourceInclude = Split-Path -Parent (Split-Path -Parent $match.FullName)
+              break
+            }
           }
 
           if (-not $sourceInclude) {
-              throw "Official MQL5 Include library containing Trade\Trade.mqh was not found."
+            throw "No genuine MQL5 Include tree containing Trade\Trade.mqh was found. Refusing to create a placeholder library."
           }
 
-          $sourceTrade = Join-Path $sourceInclude "Trade\Trade.mqh"
-          $destinationInclude = Join-Path $installDir "MQL5\Include"
-
-          New-Item -ItemType Directory -Path $destinationInclude -Force | Out-Null
+          $sourceTrade = Join-Path $sourceInclude 'Trade\Trade.mqh'
+          if (-not (Test-Path -LiteralPath $sourceTrade)) {
+            throw "Located Include directory does not contain Trade\Trade.mqh: $sourceInclude"
+          }
 
           $sourceHash = (Get-FileHash -LiteralPath $sourceTrade -Algorithm SHA256).Hash
-          $copyLog = Join-Path $env:GITHUB_WORKSPACE "build-output\include-copy.log"
+          Write-Host "Verified source Include: $sourceInclude"
+          Write-Host "Trade.mqh SHA256: $sourceHash"
 
-          & robocopy $sourceInclude $destinationInclude /E /COPY:DAT /R:2 /W:1 /NFL /NDL /NP "/LOG:$copyLog"
-          $copyCode = $LASTEXITCODE
+          # Copy the complete Include tree to the installation directory
+          # and terminal data directories, where MetaEditor may resolve includes.
+          $destinations = [System.Collections.Generic.List[string]]::new()
+          $destinations.Add($installInclude)
 
-          if ($copyCode -ge 8) {
-              throw "Official Include library copy failed. Robocopy exit code: $copyCode"
+          foreach ($base in @(
+            (Join-Path $env:APPDATA 'MetaQuotes\Terminal'),
+            (Join-Path $env:LOCALAPPDATA 'MetaQuotes\Terminal')
+          )) {
+            if (Test-Path -LiteralPath $base) {
+              Get-ChildItem -LiteralPath $base -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $destinations.Add((Join-Path $_.FullName 'MQL5\Include'))
+                }
+            }
           }
 
-          $destinationTrade = Join-Path $destinationInclude "Trade\Trade.mqh"
+          $uniqueDestinations = $destinations |
+            Select-Object -Unique
 
-          if (-not (Test-Path -LiteralPath $destinationTrade -PathType Leaf)) {
-              throw "Trade.mqh is missing from the installation Include directory."
+          foreach ($destination in $uniqueDestinations) {
+            $sourceFull = [System.IO.Path]::GetFullPath($sourceInclude).TrimEnd('\')
+            $destFull = [System.IO.Path]::GetFullPath($destination).TrimEnd('\')
+
+            if ($sourceFull -ieq $destFull) {
+              Write-Host "Skipping source directory: $destination"
+              continue
+            }
+
+            New-Item -ItemType Directory -Path $destination -Force | Out-Null
+
+            Write-Host "Synchronizing Include library to: $destination"
+
+            & robocopy $sourceInclude $destination /E /COPY:DAT /R:2 /W:2 /NFL /NDL /NP
+            $copyCode = $LASTEXITCODE
+
+            if ($copyCode -ge 8) {
+              throw "Robocopy failed with exit code $copyCode for $destination"
+            }
+
+            $targetTrade = Join-Path $destination 'Trade\Trade.mqh'
+
+            if (-not (Test-Path -LiteralPath $targetTrade)) {
+              throw "Trade.mqh is missing after synchronization: $targetTrade"
+            }
+
+            $targetHash = (Get-FileHash -LiteralPath $targetTrade -Algorithm SHA256).Hash
+
+            if ($targetHash -ne $sourceHash) {
+              throw "Trade.mqh hash mismatch at destination: $targetTrade"
+            }
+
+            Write-Host "Verified Trade.mqh at: $targetTrade"
           }
 
-          $destinationHash = (Get-FileHash -LiteralPath $destinationTrade -Algorithm SHA256).Hash
+          "MT5_INSTALL_DIR=$installDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          if ($sourceHash -ne $destinationHash) {
-              throw "Trade.mqh hash verification failed."
-          }
+          "MT5_INCLUDE_DIR=$installInclude" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-          @(
-              "Terminal: $terminal"
-              "Installation directory: $installDir"
-              "Source Include: $sourceInclude"
-              "Destination Include: $destinationInclude"
-              "Trade.mqh SHA256: $destinationHash"
-              "Hashes match: True"
-          ) | Out-File (Join-Path $env:GITHUB_WORKSPACE "build-output\library-sync-diagnostics.txt") -Encoding utf8
-
-          "MT5_INSTALL_DIR=$installDir" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-          "MT5_INCLUDE_DIR=$destinationInclude" | Out-File $env:GITHUB_ENV -Append -Encoding utf8
-
-          Write-Host "Official MQL5 Include library verified."
-
+          Write-Host "MQL5 Include initialization and verification completed."
       - name: Compile GoldHunterAI V4.11
         shell: pwsh
         run: |
