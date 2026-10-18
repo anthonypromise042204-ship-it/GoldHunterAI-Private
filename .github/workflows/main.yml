@@ -137,32 +137,42 @@ jobs:
           $log = Join-Path $outputDir 'GoldHunterAI_V4_11_compile.log'
           $ex5 = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.ex5'
 
+          $includeDir = "$env:APPDATA\MetaQuotes\Terminal\D0E8209F77C8CF37AD8BF550E51FF075\MQL5\Include"
+
+          if (-not (Test-Path (Join-Path $includeDir 'Trade\Trade.mqh'))) {
+            throw "Trade.mqh was not found at the expected include path: $includeDir"
+          }
+
           if (Test-Path $ex5) {
             Remove-Item $ex5 -Force
           }
 
-          $arguments = "/compile:`"$source`" /include:`"$env:MT5_INCLUDE`" /log:`"$log`""
-          Write-Host "Running MetaEditor with arguments: $arguments"
+          Write-Host "Source: $source"
+          Write-Host "Include directory: $includeDir"
+          Write-Host "Compiler: $env:METAEDITOR_PATH"
 
-          $process = Start-Process -FilePath $env:METAEDITOR_PATH `
-            -ArgumentList $arguments -Wait -PassThru
+          $arguments = "/compile:`"$source`" /include:`"$includeDir`" /log:`"$log`""
+
+          $process = Start-Process `
+            -FilePath $env:METAEDITOR_PATH `
+            -ArgumentList $arguments `
+            -Wait -PassThru
+
           Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
           if (Test-Path $log) {
             Get-Content $log
-            Copy-Item $log $outputDir -Force -ErrorAction SilentlyContinue
           } else {
-            Write-Warning "MetaEditor did not create a compile log at the expected path."
+            throw "MetaEditor did not create a compilation log."
           }
 
           if (-not (Test-Path $ex5) -or (Get-Item $ex5).Length -eq 0) {
-            throw "Compilation did not produce a nonempty GoldHunterAI_V4_11.ex5 file."
+            throw "Compilation did not produce a nonempty EX5 file."
           }
 
-          Write-Host "Nonempty EX5 output found."
-          Get-Item $ex5 | Select-Object FullName, Length
-
+          Copy-Item $log $outputDir -Force
           Copy-Item $ex5 $outputDir -Force
+          Write-Host "Nonempty EX5 file produced successfully."
 
       - name: Upload build diagnostics
         if: always()
