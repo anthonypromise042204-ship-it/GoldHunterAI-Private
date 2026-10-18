@@ -248,13 +248,34 @@ jobs:
 
           if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
               throw "Source EA file not found: $source"
+      - name: Compile GoldHunterAI V4.11
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $workspace = $env:GITHUB_WORKSPACE
+          $source = Join-Path $workspace "GoldHunterAI_V4_11.mq5"
+          $editor = $env:METAEDITOR_PATH
+          $log = Join-Path $workspace "build-output\GoldHunterAI_V4_11_compile.log"
+
+          if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+              throw "EA source file not found: $source"
           }
 
           if (-not (Test-Path -LiteralPath $editor -PathType Leaf)) {
-              throw "MetaEditor was not found: $editor"
+              throw "MetaEditor not found: $editor"
           }
 
-          # Find the active terminal data directory containing the synchronized library.
+          # Locate the official Include tree already verified by the previous step.
+          $installDir = Split-Path -Parent $env:MT5_TERMINAL_PATH
+          $verifiedInclude = Join-Path $installDir "MQL5\Include"
+          $verifiedTrade = Join-Path $verifiedInclude "Trade\Trade.mqh"
+
+          if (-not (Test-Path -LiteralPath $verifiedTrade -PathType Leaf)) {
+              throw "Verified installation library is missing Trade.mqh: $verifiedTrade"
+          }
+
+          # Use the terminal's data directory when available.
           $terminalRoots = @(
               (Join-Path $env:APPDATA "MetaQuotes\Terminal"),
               (Join-Path $env:LOCALAPPDATA "MetaQuotes\Terminal")
@@ -271,7 +292,7 @@ jobs:
                   -ErrorAction SilentlyContinue |
                   Where-Object {
                       Test-Path -LiteralPath (
-                          Join-Path $_.FullName "MQL5\Include\Trade\Trade.mqh"
+                          Join-Path $_.FullName "origin.txt"
                       ) -PathType Leaf
                   } |
                   Select-Object -First 1
@@ -282,32 +303,65 @@ jobs:
               }
           }
 
+          # If no initialized data directory exists, create a portable layout
+          # beside the terminal executable.
           if (-not $dataDirectory) {
-              throw "No terminal data directory containing MQL5\Include\Trade\Trade.mqh was found."
+              $dataDirectory = $installDir
+              Write-Host "No initialized terminal data directory found; using installation directory."
           }
 
+          $destinationInclude = Join-Path $dataDirectory "MQL5\Include"
+          $destinationTrade = Join-Path $destinationInclude "Trade\Trade.mqh"
+
+          New-Item -ItemType Directory -Path $destinationInclude -Force | Out-Null
+
+          # Synchronize the previously verified official library.
+          $copyLog = Join-Path $workspace "build-output\compile-library-copy.log"
+
+          & robocopy $verifiedInclude $destinationInclude /E /COPY:DAT /R:2 /W:1 /NFL /NDL /NP "/LOG:$copyLog"
+          $copyCode = $LASTEXITCODE
+
+          if ($copyCode -ge 8) {
+              throw "Include library copy failed. Robocopy exit code: $copyCode"
+          }
+
+          if (-not (Test-Path -LiteralPath $destinationTrade -PathType Leaf)) {
+              throw "Trade.mqh is still missing after library synchronization."
+          }
+
+          $verifiedHash = (Get-FileHash -LiteralPath $verifiedTrade -Algorithm SHA256).Hash
+          $copiedHash = (Get-FileHash -LiteralPath $destinationTrade -Algorithm SHA256).Hash
+
+          if ($verifiedHash -ne $copiedHash) {
+              throw "Trade.mqh hash verification failed after copying."
+          }
+
+          # Compile from the expected MQL5 Experts location.
           $expertsDirectory = Join-Path $dataDirectory "MQL5\Experts"
           New-Item -ItemType Directory -Path $expertsDirectory -Force | Out-Null
 
           $compileSource = Join-Path $expertsDirectory "GoldHunterAI_V4_11.mq5"
           $compileOutput = Join-Path $expertsDirectory "GoldHunterAI_V4_11.ex5"
+          $workspaceOutput = Join-Path $workspace "GoldHunterAI_V4_11.ex5"
 
           Copy-Item -LiteralPath $source -Destination $compileSource -Force
 
-          if (Test-Path -LiteralPath $compileOutput) {
-              Remove-Item -LiteralPath $compileOutput -Force
-          }
-
-          if (Test-Path -LiteralPath $workspaceOutput) {
-              Remove-Item -LiteralPath $workspaceOutput -Force
+          foreach ($oldFile in @($compileOutput, $workspaceOutput)) {
+              if (Test-Path -LiteralPath $oldFile -PathType Leaf) {
+                  Remove-Item -LiteralPath $oldFile -Force
+              }
           }
 
           @(
               "MetaEditor: $editor"
+              "Terminal executable: $env:MT5_TERMINAL_PATH"
               "Terminal data directory: $dataDirectory"
-              "Include library: $(Join-Path $dataDirectory 'MQL5\Include')"
+              "Verified Include: $verifiedInclude"
+              "Compile Include: $destinationInclude"
+              "Trade.mqh SHA256: $copiedHash"
               "Compile source: $compileSource"
-          ) | Out-File "build-output/compile-path-diagnostics.txt" -Encoding utf8
+              "Compile log: $log"
+          ) | Out-File (Join-Path $workspace "build-output\compile-path-diagnostics.txt") -Encoding utf8
 
           $arguments = "/compile:`"$compileSource`" /log:`"$log`""
 
@@ -330,7 +384,7 @@ jobs:
           )
 
           if (-not $result.Success) {
-              throw "Could not find the compiler's final Result line."
+              throw "The compiler log has no recognizable final Result line."
           }
 
           $errors = [int]$result.Groups[1].Value
@@ -341,7 +395,7 @@ jobs:
           }
 
           if (-not (Test-Path -LiteralPath $compileOutput -PathType Leaf)) {
-              throw "Compiler reported zero errors but produced no EX5 file."
+              throw "Compiler reported zero errors but did not produce an EX5 file."
           }
 
           $size = (Get-Item -LiteralPath $compileOutput).Length
@@ -351,7 +405,7 @@ jobs:
           }
 
           Copy-Item -LiteralPath $compileOutput `
-              -Destination "build-output\GoldHunterAI_V4_11.ex5" -Force
+              -Destination (Join-Path $workspace "build-output\GoldHunterAI_V4_11.ex5") -Force
 
           Copy-Item -LiteralPath $compileOutput `
               -Destination $workspaceOutput -Force
@@ -362,7 +416,7 @@ jobs:
               "EX5 size: $size bytes"
               "Compiled source: $compileSource"
               "Build status: Success"
-          ) | Out-File "build-output/build-summary.txt" -Encoding utf8
+          ) | Out-File (Join-Path $workspace "build-output\build-summary.txt") -Encoding utf8
       - name: Upload build diagnostics and compiled file
         if: always()
         uses: actions/upload-artifact@v4
