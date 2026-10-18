@@ -97,29 +97,57 @@ jobs:
             'C:\MT5',
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5',
-            "$env:APPDATA\MetaQuotes\Terminal"
+            "$env:APPDATA\MetaQuotes\Terminal",
+            "$env:LOCALAPPDATA\Programs"
           )
 
-          $tradeFile = $null
-          foreach ($root in $roots) {
-            if (Test-Path $root) {
-              $match = Get-ChildItem $root -Filter 'Trade.mqh' -Recurse `
-                -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($match) {
-                $tradeFile = $match.FullName
-                break
+          Write-Host "Searching for the official MetaTrader Trade.mqh library..."
+
+          $matches = @(
+            foreach ($root in $roots) {
+              if (Test-Path $root) {
+                Get-ChildItem -Path $root `
+                  -Filter 'Trade.mqh' `
+                  -File `
+                  -Recurse `
+                  -ErrorAction SilentlyContinue
               }
             }
-          }
+          )
+
+          $tradeFile = $matches |
+            Where-Object {
+              $_.FullName -match '[\\/]MQL5[\\/]Include[\\/]Trade[\\/]Trade\.mqh$'
+            } |
+            Select-Object -First 1
 
           if (-not $tradeFile) {
-            throw "Trade.mqh was not found. Check the runner's MetaTrader installation."
+            Write-Host "Trade.mqh was not found in the expected standard-library path."
+
+            Write-Host "MetaEditor path:"
+            Write-Host $env:METAEDITOR_PATH
+
+            Write-Host "Checking whether an MT5 terminal was installed..."
+
+            $terminals = @(
+              'C:\MT5\terminal64.exe',
+              'C:\Program Files\MetaTrader 5\terminal64.exe',
+              'C:\Program Files (x86)\MetaTrader 5\terminal64.exe'
+            )
+
+            foreach ($terminal in $terminals) {
+              Write-Host "$terminal : $(Test-Path $terminal)"
+            }
+
+            throw "The MT5 standard library is missing. Install or initialize an official MetaTrader terminal before compiling."
           }
 
-          $includeDir = Split-Path (Split-Path $tradeFile -Parent) -Parent
+          $includeDir = Split-Path (Split-Path $tradeFile.FullName -Parent) -Parent
+
           "MT5_INCLUDE=$includeDir" |
             Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Trade.mqh found: $tradeFile"
+
+          Write-Host "Trade.mqh found: $($tradeFile.FullName)"
           Write-Host "Include directory: $includeDir"
 
       - name: Compile GoldHunterAI V4.11
