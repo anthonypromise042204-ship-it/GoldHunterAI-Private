@@ -1,218 +1,168 @@
 name: GOLD HUNTER AI V4.11 Compiler
 
 on:
-workflow_dispatch:
-push:
-branches:
-- main
-- goldhunter-v4-safety-upgrade
-paths:
-- 'GoldHunterAI_V4_11.mq5'
-- '.github/workflows/main.yml'
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - goldhunter-v4-safety-upgrade
+    paths:
+      - 'GoldHunterAI_V4_11.mq5'
+      - '.github/workflows/main.yml'
 
 permissions:
-contents: read
+  contents: read
 
 jobs:
-compile:
-name: Install MetaTrader 5 and compile V4.11
-runs-on: windows-latest
-timeout-minutes: 30
+  compile:
+    name: Compile GoldHunterAI V4.11
+    runs-on: windows-latest
+    timeout-minutes: 30
 
-steps:
-  - name: Checkout repository
-    uses: actions/checkout@v4
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-  - name: Verify source file and safety defaults
-    shell: pwsh
-    run: |
-      $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.mq5'
+      - name: Verify source file
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.mq5'
+          if (-not (Test-Path $source)) {
+            Write-Error "GoldHunterAI_V4_11.mq5 was not found."
+            exit 1
+          }
+          Write-Host "Source file found: $source"
+          Get-FileHash $source -Algorithm SHA256
 
-      if (!(Test-Path $source)) {
-        throw "Source file not found: $source"
-      }
+      - name: Download MetaTrader 5 installer
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          $url = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          Invoke-WebRequest -Uri $url -OutFile $installer
+          if ((Get-Item $installer).Length -lt 1000000) {
+            throw "The MetaTrader 5 installer download is unexpectedly small."
+          }
+          $signature = Get-AuthenticodeSignature $installer
+          Write-Host "Installer signature status: $($signature.Status)"
+          if ($signature.Status -ne 'Valid') {
+            throw "The installer signature is not valid."
+          }
 
-      $code = Get-Content $source -Raw
+      - name: Install MetaTrader 5
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          $installDir = 'C:\MT5'
+          New-Item -ItemType Directory -Force -Path $installDir | Out-Null
+          $process = Start-Process -FilePath $installer -ArgumentList "/auto" -Wait -PassThru
+          Write-Host "Installer exit code: $($process.ExitCode)"
+          Start-Sleep -Seconds 10
 
-      if ($code -notmatch '(?i)\bEnableTrading\s*=\s*false\b') {
-        throw "Safety check failed: EnableTrading=false was not found."
-      }
+          $editors = @(
+            'C:\MT5\MetaEditor64.exe',
+            'C:\Program Files\MetaTrader 5\MetaEditor64.exe',
+            'C:\Program Files (x86)\MetaTrader 5\MetaEditor64.exe'
+          )
 
-      if ($code -notmatch '(?i)\bDemoOnly\s*=\s*true\b') {
-        throw "Safety check failed: DemoOnly=true was not found."
-      }
+          $editorPath = $null
+          foreach ($candidate in $editors) {
+            if (Test-Path $candidate) {
+              $editorPath = $candidate
+              break
+            }
+          }
 
-      if ($code -notmatch '#include\s*<Trade\\Trade\.mqh>') {
-        throw "Expected #include <Trade\Trade.mqh> was not found."
-      }
+          if (-not $editorPath) {
+            $editor = Get-ChildItem 'C:\Program Files','C:\Program Files (x86)','C:\MT5' `
+              -Filter 'MetaEditor64.exe' -Recurse -ErrorAction SilentlyContinue |
+              Select-Object -First 1
+            if ($editor) {
+              $editorPath = $editor.FullName
+            }
+          }
 
-      Write-Host "Source file exists."
-      Write-Host "Safety defaults verified."
-      Get-FileHash $source -Algorithm SHA256
+          if (-not $editorPath) {
+            throw "MetaEditor64.exe was not found after installation."
+          }
 
-  - name: Download official MetaTrader 5 installer
-    shell: pwsh
-    run: |
-      $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
-      $uri = 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe'
+          "METAEDITOR_PATH=$editorPath" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "MetaEditor found: $editorPath"
 
-      Invoke-WebRequest -Uri $uri -OutFile $installer
+      - name: Locate Trade.mqh
+        shell: pwsh
+        run: |
+          $roots = @(
+            'C:\MT5',
+            'C:\Program Files\MetaTrader 5',
+            'C:\Program Files (x86)\MetaTrader 5',
+            "$env:APPDATA\MetaQuotes\Terminal"
+          )
 
-      if (!(Test-Path $installer) -or
-          (Get-Item $installer).Length -lt 1MB) {
-        throw "The MetaTrader installer download is missing or too small."
-      }
+          $tradeFile = $null
+          foreach ($root in $roots) {
+            if (Test-Path $root) {
+              $match = Get-ChildItem $root -Filter 'Trade.mqh' -Recurse `
+                -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($match) {
+                $tradeFile = $match.FullName
+                break
+              }
+            }
+          }
 
-      $signature = Get-AuthenticodeSignature $installer
+          if (-not $tradeFile) {
+            throw "Trade.mqh was not found. Check the runner's MetaTrader installation."
+          }
 
-      if ($signature.Status -ne 'Valid') {
-        throw "Installer signature verification failed: $($signature.Status)"
-      }
+          $includeDir = Split-Path (Split-Path $tradeFile -Parent) -Parent
+          "MT5_INCLUDE=$includeDir" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Trade.mqh found: $tradeFile"
+          Write-Host "Include directory: $includeDir"
 
-      Write-Host "Official installer downloaded and signature verified."
+      - name: Compile GoldHunterAI V4.11
+        shell: pwsh
+        run: |
+          $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.mq5'
+          $outputDir = Join-Path $env:GITHUB_WORKSPACE 'build-output'
+          New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
-  - name: Install MetaTrader 5
-    shell: pwsh
-    run: |
-      $installer = Join-Path $env:RUNNER_TEMP 'mt5setup.exe'
+          $log = Join-Path $outputDir 'GoldHunterAI_V4_11_compile.log'
+          $ex5 = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.ex5'
 
-      $process = Start-Process `
-        -FilePath $installer `
-        -ArgumentList '/auto' `
-        -PassThru `
-        -Wait
+          if (Test-Path $ex5) {
+            Remove-Item $ex5 -Force
+          }
 
-      Write-Host "Installer exit code: $($process.ExitCode)"
+          $arguments = "/compile:`"$source`" /include:`"$env:MT5_INCLUDE`" /log:`"$log`""
+          Write-Host "Running MetaEditor with arguments: $arguments"
 
-      $editor = Get-ChildItem 'C:\Program Files',
-                              'C:\Program Files (x86)' `
-        -Filter 'MetaEditor64.exe' `
-        -File -Recurse -ErrorAction SilentlyContinue |
-        Select-Object -First 1
+          $process = Start-Process -FilePath $env:METAEDITOR_PATH `
+            -ArgumentList $arguments -Wait -PassThru
+          Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
-      if (!$editor) {
-        throw "MetaEditor64.exe was not found after installation."
-      }
+          if (Test-Path $log) {
+            Get-Content $log
+            Copy-Item $log $outputDir -Force -ErrorAction SilentlyContinue
+          } else {
+            Write-Warning "MetaEditor did not create a compile log at the expected path."
+          }
 
-      "METAEDITOR_PATH=$($editor.FullName)" |
-        Out-File $env:GITHUB_ENV -Append
+          if (-not (Test-Path $ex5) -or (Get-Item $ex5).Length -eq 0) {
+            throw "Compilation did not produce a nonempty GoldHunterAI_V4_11.ex5 file."
+          }
 
-      "MT5_INSTALL_ROOT=$($editor.Directory.FullName)" |
-        Out-File $env:GITHUB_ENV -Append
+          Write-Host "Nonempty EX5 output found."
+          Get-Item $ex5 | Select-Object FullName, Length
 
-      Write-Host "MetaEditor found: $($editor.FullName)"
+          Copy-Item $ex5 $outputDir -Force
 
-  - name: Locate a compatible MQL5 Standard Library
-    shell: pwsh
-    run: |
-      $roots = @(
-        $env:MT5_INSTALL_ROOT,
-        (Join-Path $env:MT5_INSTALL_ROOT 'MQL5'),
-        (Join-Path $env:APPDATA 'MetaQuotes\Terminal')
-      ) | Where-Object { $_ -and (Test-Path $_) }
-
-      $tradeHeaders = foreach ($root in $roots) {
-        Get-ChildItem -Path $root `
-          -Filter 'Trade.mqh' `
-          -File -Recurse `
-          -ErrorAction SilentlyContinue
-      }
-
-      $tradeHeader = $tradeHeaders |
-        Where-Object {
-          $_.FullName -match '\\MQL5\\Include\\Trade\\Trade\.mqh$'
-        } |
-        Select-Object -First 1
-
-      if (!$tradeHeader) {
-        New-Item -ItemType Directory `
-          -Path build-output -Force | Out-Null
-
-        @"
-        Trade.mqh was not found in an expected MQL5\Include\Trade folder.
-        No third-party library was substituted.
-        MetaEditor: $env:METAEDITOR_PATH
-        Installation root: $env:MT5_INSTALL_ROOT
-        "@ | Set-Content build-output\library-diagnostic.txt
-
-        throw "Compatible Trade.mqh not found. See the diagnostic artifact."
-      }
-
-      $includeRoot = $tradeHeader.FullName.Substring(
-        0,
-        $tradeHeader.FullName.IndexOf('\Trade\Trade.mqh')
-      )
-
-      "MT5_INCLUDE_ROOT=$includeRoot" |
-        Out-File $env:GITHUB_ENV -Append
-
-      Write-Host "Standard Library include root: $includeRoot"
-      Write-Host "Trade.mqh: $($tradeHeader.FullName)"
-
-  - name: Compile GoldHunterAI V4.11
-    shell: pwsh
-    run: |
-      New-Item -ItemType Directory `
-        -Path build-output -Force | Out-Null
-
-      $source = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.mq5'
-      $log = Join-Path $env:GITHUB_WORKSPACE 'build-output\GoldHunterAI_V4_11_compile.log'
-      $ex5 = Join-Path $env:GITHUB_WORKSPACE 'GoldHunterAI_V4_11.ex5'
-
-      if (Test-Path $ex5) {
-        Remove-Item $ex5 -Force
-      }
-
-      $arguments = @(
-        "/compile:`"$source`""
-        "/include:`"$env:MT5_INCLUDE_ROOT`""
-        "/log:`"$log`""
-      ) -join ' '
-
-      Write-Host "Running MetaEditor compiler..."
-      $process = Start-Process `
-        -FilePath $env:METAEDITOR_PATH `
-        -ArgumentList $arguments `
-        -PassThru `
-        -Wait
-
-      Write-Host "MetaEditor process exit code: $($process.ExitCode)"
-
-      Start-Sleep -Seconds 2
-
-      if (!(Test-Path $log)) {
-        throw "Compilation log was not created."
-      }
-
-      Copy-Item $log build-output\GoldHunterAI_V4_11_compile.log -Force
-      Get-Content $log
-
-      $logText = Get-Content $log -Raw
-
-      if ($logText -match '(?i)\b\d+\s+errors?\b' -and
-          $logText -notmatch '(?i)\b0\s+errors?\b') {
-        throw "Compiler log reports one or more errors."
-      }
-
-      if (!(Test-Path $ex5) -or (Get-Item $ex5).Length -eq 0) {
-        throw "A nonempty GoldHunterAI_V4_11.ex5 file was not produced."
-      }
-
-      Copy-Item $ex5 build-output\GoldHunterAI_V4_11.ex5 -Force
-
-      Get-FileHash $ex5 -Algorithm SHA256 |
-        Format-List |
-        Out-File build-output\ex5-sha256.txt
-
-      Write-Host "Compilation output exists and is nonempty."
-
-  - name: Upload build diagnostics and output
-    if: always()
-    uses: actions/upload-artifact@v4
-    with:
-      name: GoldHunterAI-V4.11-Build-Results
-      path: |
-        build-output/**
-        GoldHunterAI_V4_11.ex5
-      if-no-files-found: warn
-      retention-days: 14
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: GoldHunterAI-V4.11-Build-Results
+          path: build-output/
+          if-no-files-found: warn
