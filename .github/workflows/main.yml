@@ -1,3 +1,4 @@
+
 name: GOLD HUNTER AI V3.4 Compiler
 
 on:
@@ -43,13 +44,12 @@ jobs:
             throw 'GoldHunterAI_V3_4.mq5 was not found.'
           }
 
-          $version = Select-String `
-            -LiteralPath $source `
+          $version = Select-String -LiteralPath $source `
             -Pattern '^\s*#property\s+version\s+"3\.40"\s*$' `
             -ErrorAction SilentlyContinue
 
           if (-not $version) {
-            throw 'Expected #property version "3.40" was not found.'
+            throw 'Expected source version 3.40 was not found.'
           }
 
           $hash = Get-FileHash -LiteralPath $source -Algorithm SHA256
@@ -61,10 +61,7 @@ jobs:
           ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'source-diagnostics.txt')
 
           "EA_SOURCE=$source" >> $env:GITHUB_ENV
-
-          Write-Host "Verified source: $source"
-          Write-Host "SHA256: $($hash.Hash)"
-          Write-Host 'Version: 3.40'
+          Write-Host "Verified source SHA256: $($hash.Hash)"
 
       - name: Download MetaTrader 5 installer
         shell: pwsh
@@ -75,10 +72,6 @@ jobs:
           Invoke-WebRequest `
             -Uri 'https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe' `
             -OutFile $installer
-
-          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-            throw 'MetaTrader installer download failed.'
-          }
 
           if ((Get-Item -LiteralPath $installer).Length -lt 1MB) {
             throw 'MetaTrader installer is unexpectedly small.'
@@ -91,264 +84,128 @@ jobs:
           }
 
           "MT5_INSTALLER=$installer" >> $env:GITHUB_ENV
-
           Write-Host "Installer signature: $($signature.Status)"
-          Write-Host "Installer signer: $($signature.SignerCertificate.Subject)"
 
-      - name: Install MetaTrader 5
+      - name: Install and locate MetaEditor
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $installDir = 'C:\MT5'
-
           New-Item -ItemType Directory -Path $installDir -Force | Out-Null
 
           $process = Start-Process `
             -FilePath $env:MT5_INSTALLER `
             -ArgumentList @('/auto', "/path:$installDir") `
-            -PassThru `
-            -Wait
+            -PassThru -Wait
 
           Write-Host "Installer exit code: $($process.ExitCode)"
 
-          $searchRoots = @(
+          $editor = $null
+          foreach ($root in @(
             'C:\MT5',
             'C:\Program Files\MetaTrader 5',
             'C:\Program Files (x86)\MetaTrader 5'
-          )
-
-          $editor = $null
-
-          foreach ($root in $searchRoots) {
-            $possible = Join-Path $root 'MetaEditor64.exe'
-
-            if (Test-Path -LiteralPath $possible -PathType Leaf) {
-              $editor = $possible
+          )) {
+            $candidate = Join-Path $root 'MetaEditor64.exe'
+            if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+              $editor = $candidate
               break
             }
           }
 
           if (-not $editor) {
-            foreach ($root in $searchRoots) {
-              if (Test-Path -LiteralPath $root -PathType Container) {
-                $found = Get-ChildItem `
-                  -LiteralPath $root `
-                  -Filter 'MetaEditor64.exe' `
-                  -File `
-                  -Recurse `
-                  -ErrorAction SilentlyContinue |
-                  Select-Object -First 1
-
-                if ($found) {
-                  $editor = $found.FullName
-                  break
-                }
-              }
-            }
-          }
-
-          if (-not $editor) {
-            throw 'MetaEditor64.exe was not found after installation.'
-          }
-
-          $mt5Root = Split-Path -Parent $editor
-          $terminal = Join-Path $mt5Root 'terminal64.exe'
-
-          $editorInfo = (Get-Item -LiteralPath $editor).VersionInfo
-          $editorVersion = "$($editorInfo.ProductVersion) (file $($editorInfo.FileVersion))"
-          $terminalVersion = 'Terminal executable not found'
-
-          if (Test-Path -LiteralPath $terminal -PathType Leaf) {
-            $terminalInfo = (Get-Item -LiteralPath $terminal).VersionInfo
-            $terminalVersion = "$($terminalInfo.ProductVersion) (file $($terminalInfo.FileVersion))"
+            throw 'MetaEditor64.exe was not found.'
           }
 
           "METAEDITOR_PATH=$editor" >> $env:GITHUB_ENV
-          "MT5_ROOT=$mt5Root" >> $env:GITHUB_ENV
+          "MT5_ROOT=$(Split-Path -Parent $editor)" >> $env:GITHUB_ENV
 
           @(
             "MetaEditor: $editor"
-            "MetaEditor version: $editorVersion"
-            "Terminal: $terminal"
-            "Terminal version: $terminalVersion"
-            "MT5 root: $mt5Root"
+            "MetaEditor version: $((Get-Item $editor).VersionInfo.ProductVersion)"
             "Installer exit code: $($process.ExitCode)"
           ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'installation-diagnostics.txt')
 
-          Write-Host "MetaEditor: $editor"
-          Write-Host "MetaEditor version: $editorVersion"
-          Write-Host "Terminal version: $terminalVersion"
-          Write-Host "MT5 root: $mt5Root"
-
-      - name: Discover and validate MT5 Include library
+      - name: Provision and validate MQL5 Include library
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $buildOutput = $env:BUILD_OUTPUT
+          # Pinned third-party mirror; this is not an official MetaQuotes package.
+          $commit = 'd913f3880a6120e7f8d276b97e819c3e7d97e95b'
+          $zip = Join-Path $env:RUNNER_TEMP 'mql5-include.zip'
+          $extract = Join-Path $env:RUNNER_TEMP 'mql5-include-extracted'
+          $include = Join-Path $env:RUNNER_TEMP 'mql5-build-root\MQL5\Include'
 
-          if ([string]::IsNullOrWhiteSpace($buildOutput)) {
-            $buildOutput = Join-Path $env:GITHUB_WORKSPACE 'build-output'
+          $uri = "https://github.com/gsemet/mt5-include/archive/$commit.zip"
+          Invoke-WebRequest -Uri $uri -OutFile $zip
+
+          if ((Get-Item -LiteralPath $zip).Length -lt 10000) {
+            throw 'The MQL5 Include archive is unexpectedly small.'
           }
 
-          New-Item -ItemType Directory -Path $buildOutput -Force | Out-Null
-
-          $diagnosticFile = Join-Path $buildOutput 'include-diagnostics.txt'
-          $diagnostics = [System.Collections.Generic.List[string]]::new()
-
-          $diagnostics.Add('=== MT5 INCLUDE LIBRARY DIAGNOSTICS ===')
-          $diagnostics.Add("Date: $(Get-Date -Format o)")
-          $diagnostics.Add("MT5_ROOT: $env:MT5_ROOT")
-          $diagnostics.Add("APPDATA: $env:APPDATA")
-          $diagnostics.Add('')
-
-          $terminalDataRoot = Join-Path $env:APPDATA 'MetaQuotes\Terminal'
-
-          $searchRoots = @(
-            $env:MT5_ROOT,
-            'C:\MT5',
-            'C:\Program Files\MetaTrader 5',
-            'C:\Program Files (x86)\MetaTrader 5',
-            $terminalDataRoot
-          ) | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_)
-          } | Select-Object -Unique
-
-          $candidates = [System.Collections.Generic.List[string]]::new()
-
-          foreach ($root in $searchRoots) {
-            $diagnostics.Add("SEARCH ROOT: $root")
-
-            if (-not (Test-Path -LiteralPath $root -PathType Container)) {
-              $diagnostics.Add('  Root exists: NO')
-              continue
-            }
-
-            $diagnostics.Add('  Root exists: YES')
-
-            $directInclude = Join-Path $root 'MQL5\Include'
-
-            if (Test-Path -LiteralPath $directInclude -PathType Container) {
-              $diagnostics.Add("  Include directory found: $directInclude")
-              $candidates.Add($directInclude)
-            }
-            else {
-              $diagnostics.Add("  Include directory missing: $directInclude")
-            }
-
-            if ($root -eq $terminalDataRoot) {
-              Get-ChildItem `
-                -LiteralPath $root `
-                -Directory `
-                -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                  $dataRoot = $_.FullName
-                  $dataInclude = Join-Path $dataRoot 'MQL5\Include'
-
-                  $diagnostics.Add("  Terminal data folder: $dataRoot")
-
-                  if (Test-Path -LiteralPath $dataInclude -PathType Container) {
-                    $diagnostics.Add("  Terminal Include found: $dataInclude")
-                    $candidates.Add($dataInclude)
-                  }
-                  else {
-                    $diagnostics.Add("  Terminal Include missing: $dataInclude")
-                  }
-                }
-            }
+          if (Test-Path -LiteralPath $extract) {
+            Remove-Item -LiteralPath $extract -Recurse -Force
           }
+          Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
+
+          $trade = Get-ChildItem -LiteralPath $extract `
+            -Filter 'Trade.mqh' -File -Recurse |
+            Select-Object -First 1
+
+          if (-not $trade) {
+            throw 'Trade.mqh was not found in the downloaded archive.'
+          }
+
+          $sourceInclude = $trade.Directory.Parent.FullName
 
           $required = @(
+            'Object.mqh',
             'Trade\Trade.mqh',
             'Trade\PositionInfo.mqh',
             'Trade\SymbolInfo.mqh',
-            'Trade\AccountInfo.mqh'
+            'Trade\AccountInfo.mqh',
+            'Trade\OrderInfo.mqh',
+            'Trade\HistoryOrderInfo.mqh',
+            'Trade\DealInfo.mqh'
           )
 
-          $validInclude = $null
-
-          foreach ($include in ($candidates | Select-Object -Unique)) {
-            $diagnostics.Add('')
-            $diagnostics.Add("CHECKING CANDIDATE: $include")
-            $valid = $true
-
-            foreach ($relative in $required) {
-              $file = Join-Path $include $relative
-
-              if (Test-Path -LiteralPath $file -PathType Leaf) {
-                $diagnostics.Add("  FOUND: $relative")
-              }
-              else {
-                $diagnostics.Add("  MISSING: $relative")
-                $valid = $false
-              }
-            }
-
-            $tradeFile = Join-Path $include 'Trade\Trade.mqh'
-
-            if (Test-Path -LiteralPath $tradeFile -PathType Leaf) {
-              $tradeText = Get-Content -LiteralPath $tradeFile -Raw
-
-              if ($tradeText -match 'SetTypeFillingBySymbol') {
-                $diagnostics.Add('  Compatibility check: SetTypeFillingBySymbol found')
-              }
-              else {
-                $diagnostics.Add('  INCOMPATIBLE: SetTypeFillingBySymbol not found')
-                $valid = $false
-              }
-            }
-
-            if ($valid) {
-              $validInclude = $include
-              $diagnostics.Add("VALID INCLUDE SELECTED: $include")
-              break
+          foreach ($relative in $required) {
+            $file = Join-Path $sourceInclude $relative
+            if (-not (Test-Path -LiteralPath $file -PathType Leaf)) {
+              throw "Required Include file missing from mirror: $relative"
             }
           }
 
-          if (-not $validInclude) {
-            $diagnostics.Add('')
-            $diagnostics.Add('RESULT: No compatible standard Include directory found.')
-            $diagnostics.Add('No third-party libraries downloaded.')
-            $diagnostics.Add('No Include files overwritten.')
+          $tradeText = Get-Content `
+            -LiteralPath (Join-Path $sourceInclude 'Trade\Trade.mqh') -Raw
 
-            $diagnostics | Set-Content -LiteralPath $diagnosticFile
-
-            Write-Host 'Include discovery failed. Diagnostics saved.'
-            Get-Content -LiteralPath $diagnosticFile
-
-            throw 'No compatible MQL5 Include library found. Review build-output/include-diagnostics.txt.'
+          if ($tradeText -notmatch 'SetTypeFillingBySymbol') {
+            throw 'Mirror compatibility check failed: SetTypeFillingBySymbol missing.'
           }
 
-          $mql5Root = Split-Path -Parent $validInclude
-          $dataRoot = Split-Path -Parent $mql5Root
+          New-Item -ItemType Directory -Path $include -Force | Out-Null
+          Copy-Item -Path (Join-Path $sourceInclude '*') `
+            -Destination $include -Recurse -Force
 
-          "MQL5_INCLUDE=$validInclude" >> $env:GITHUB_ENV
-          "MQL5_DATA_ROOT=$dataRoot" >> $env:GITHUB_ENV
+          "MQL5_INCLUDE=$include" >> $env:GITHUB_ENV
+          "MQL5_DATA_ROOT=$(Join-Path $env:RUNNER_TEMP 'mql5-build-root')" >> $env:GITHUB_ENV
 
-          $diagnostics.Add('')
-          $diagnostics.Add("Selected Include: $validInclude")
-          $diagnostics.Add("Selected MQL5 root: $mql5Root")
-          $diagnostics.Add("Selected data root: $dataRoot")
-          $diagnostics.Add('No third-party libraries downloaded.')
-          $diagnostics.Add('No Include files overwritten.')
+          @(
+            "Source URL: $uri"
+            "Pinned commit: $commit"
+            'Source type: Third-party mirror; not official MetaQuotes distribution'
+            "Include destination: $include"
+            'Required header checks: passed'
+            'SetTypeFillingBySymbol check: passed'
+          ) | Set-Content (Join-Path $env:BUILD_OUTPUT 'include-diagnostics.txt')
 
-          $diagnostics | Set-Content -LiteralPath $diagnosticFile
-
-          Write-Host "Selected Include: $validInclude"
-          Write-Host "Selected data root: $dataRoot"
+          Write-Host "Validated third-party Include library: $include"
 
       - name: Prepare compilation environment
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
-          if (-not $env:MQL5_DATA_ROOT) {
-            throw 'MQL5_DATA_ROOT was not set by library discovery.'
-          }
-
-          if (-not $env:MQL5_INCLUDE) {
-            throw 'MQL5_INCLUDE was not set by library discovery.'
-          }
 
           $expertDir = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts'
           New-Item -ItemType Directory -Path $expertDir -Force | Out-Null
@@ -362,24 +219,20 @@ jobs:
             Remove-Item -LiteralPath $ex5 -Force
           }
 
-          $tradeFile = Join-Path $env:MQL5_INCLUDE 'Trade\Trade.mqh'
-
-          if (-not (Test-Path -LiteralPath $tradeFile -PathType Leaf)) {
-            throw "Trade.mqh is missing: $tradeFile"
+          if (-not (Test-Path -LiteralPath (Join-Path $env:MQL5_INCLUDE 'Trade\Trade.mqh'))) {
+            throw 'Trade.mqh is missing from the selected Include directory.'
           }
 
           "EA_TARGET=$target" >> $env:GITHUB_ENV
           "EA_EX5=$ex5" >> $env:GITHUB_ENV
 
-          Write-Host "EA source: $target"
-          Write-Host "Expected EX5: $ex5"
+          Write-Host "EA target: $target"
           Write-Host "Include root: $env:MQL5_INCLUDE"
 
       - name: Compile GoldHunterAI V3.4
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-
           $compileLog = Join-Path $env:BUILD_OUTPUT 'GoldHunterAI_V3_4_compile.log'
 
           $process = Start-Process `
@@ -388,11 +241,10 @@ jobs:
               "/compile:$($env:EA_TARGET)",
               "/log:$compileLog"
             ) `
-            -PassThru `
-            -Wait
+            -PassThru -Wait
 
-          Write-Host "MetaEditor exit code: $($process.ExitCode)"
           Start-Sleep -Seconds 2
+          Write-Host "MetaEditor exit code: $($process.ExitCode)"
 
           if (-not (Test-Path -LiteralPath $compileLog -PathType Leaf)) {
             throw 'MetaEditor did not create a compilation log.'
@@ -402,24 +254,20 @@ jobs:
           Get-Content -LiteralPath $compileLog
 
           $errorsMatch = [regex]::Match($logText, '(?im)\b(\d+)\s+errors?\b')
-
           if (-not $errorsMatch.Success) {
-            throw 'Could not determine compiler error count.'
+            throw 'Could not determine compiler error count from the log.'
           }
 
           $errorCount = [int]$errorsMatch.Groups[1].Value
-          Write-Host "Compiler errors: $errorCount"
-
           if ($errorCount -ne 0) {
             throw "Compilation failed with $errorCount error(s)."
           }
 
           if (-not (Test-Path -LiteralPath $env:EA_EX5 -PathType Leaf)) {
-            throw 'Compilation log reported no errors, but the EX5 file is missing.'
+            throw 'No EX5 file was produced.'
           }
 
           $ex5Info = Get-Item -LiteralPath $env:EA_EX5
-
           if ($ex5Info.Length -le 0) {
             throw 'The generated EX5 file is empty.'
           }
@@ -442,14 +290,9 @@ jobs:
             New-Item -ItemType Directory -Path $resultDir -Force | Out-Null
           }
 
-          if ($env:MQL5_DATA_ROOT) {
-            $ex5 = Join-Path $env:MQL5_DATA_ROOT 'MQL5\Experts\GoldHunterAI_V3_4.ex5'
-            $artifactEx5 = Join-Path $resultDir 'GoldHunterAI_V3_4.ex5'
-
-            if ((Test-Path -LiteralPath $ex5 -PathType Leaf) -and
-                ([IO.Path]::GetFullPath($ex5) -ne [IO.Path]::GetFullPath($artifactEx5))) {
-              Copy-Item -LiteralPath $ex5 -Destination $artifactEx5 -Force
-            }
+          if ($env:EA_EX5 -and (Test-Path -LiteralPath $env:EA_EX5 -PathType Leaf)) {
+            Copy-Item -LiteralPath $env:EA_EX5 `
+              -Destination (Join-Path $resultDir 'GoldHunterAI_V3_4.ex5') -Force
           }
 
           Get-ChildItem -LiteralPath $resultDir -Force |
