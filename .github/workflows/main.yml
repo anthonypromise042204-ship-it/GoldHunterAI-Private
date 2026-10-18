@@ -73,7 +73,7 @@ jobs:
             "Signature status: $($signature.Status)"
             "Signer: $($signature.SignerCertificate.Subject)"
           ) | Out-File (
-            Join-Path $env:GITHUB_WORKSPACE "build-output\installer-diagnostics.txt"
+            (Join-Path $env:GITHUB_WORKSPACE "build-output\installer-diagnostics.txt")
           ) -Encoding utf8
 
           if ($signature.Status -ne "Valid") {
@@ -150,7 +150,7 @@ jobs:
             "MetaEditor path: $editor"
             "Terminal path: $terminal"
           ) | Out-File (
-            Join-Path $env:GITHUB_WORKSPACE "build-output\installation-diagnostics.txt"
+            (Join-Path $env:GITHUB_WORKSPACE "build-output\installation-diagnostics.txt")
           ) -Encoding utf8
 
           if (-not $editor) {
@@ -184,7 +184,6 @@ jobs:
           $installDir = Split-Path -Parent $terminal
           $installInclude = Join-Path $installDir "MQL5\Include"
 
-          # Attempt first-run initialization without account credentials.
           $initResult = "Not completed"
 
           try {
@@ -211,7 +210,6 @@ jobs:
             Write-Warning $initResult
           }
 
-          # Search installation and common terminal data directories.
           $searchRoots = @(
             $installDir,
             $installInclude,
@@ -289,7 +287,6 @@ jobs:
           Write-Host "Verified Include directory: $sourceInclude"
           Write-Host "Trade.mqh SHA256: $sourceHash"
 
-          # Synchronize the complete Include tree.
           if ([System.IO.Path]::GetFullPath($sourceInclude).TrimEnd('\') -ine
               [System.IO.Path]::GetFullPath($installInclude).TrimEnd('\')) {
 
@@ -302,10 +299,19 @@ jobs:
 
             $copyCode = $LASTEXITCODE
 
+            # Robocopy codes 0-7 are successful outcomes.
+            # Reset the native-command exit status immediately.
+            $global:LASTEXITCODE = 0
+
             if ($copyCode -ge 8) {
               throw "Include synchronization failed: robocopy exit code $copyCode."
             }
+
+            Write-Host "Include synchronization completed. Robocopy exit code: $copyCode."
           }
+
+          # Ensure a successful copy cannot cause the PowerShell step to fail.
+          $global:LASTEXITCODE = 0
 
           $targetTrade = Join-Path $installInclude "Trade\Trade.mqh"
 
@@ -371,7 +377,6 @@ jobs:
 
           Copy-Item -LiteralPath $source -Destination $compileSource -Force
 
-          # Remove stale output so an old EX5 cannot appear to be a new build.
           if (Test-Path -LiteralPath $compileOutput -PathType Leaf) {
             Remove-Item -LiteralPath $compileOutput -Force
           }
